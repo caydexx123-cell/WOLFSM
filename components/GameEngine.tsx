@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Entity, GameState, Vec2 } from '../types';
+import { Entity, GameState, Vec2 } from '../types.ts';
 import { Sword, Skull, Menu } from 'lucide-react';
 
 const FPS = 60;

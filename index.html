@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Forest Hotline</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Babel for browser-side compilation (Fixes GitHub Pages static hosting issues) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
     <style>
       html, body, #root {
         height: 100%;
@@ -14,7 +18,6 @@
         background-color: #1a1a1a;
         overflow: hidden;
       }
-      /* Custom scanline effect for that retro vibe */
       .scanlines {
         background: linear-gradient(
           to bottom,
@@ -35,20 +38,23 @@
         top: 0;
         left: 0;
         width: 100%;
-        padding: 20px;
-        background: rgba(220, 38, 38, 0.9);
-        color: white;
+        height: 100%;
+        padding: 40px;
+        background: rgba(0, 0, 0, 0.95);
+        color: #ef4444;
         font-family: monospace;
         z-index: 9999;
+        overflow: auto;
       }
     </style>
   <script type="importmap">
 {
   "imports": {
     "react": "https://esm.sh/react@^19.2.3",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react-dom/client": "https://esm.sh/react-dom@^19.2.3/client",
     "react/": "https://esm.sh/react@^19.2.3/",
-    "lucide-react": "https://esm.sh/lucide-react@^0.561.0"
+    "lucide-react": "https://esm.sh/lucide-react@^0.561.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
   }
 }
 </script>
@@ -56,11 +62,12 @@
   <body>
     <div id="error-display"></div>
     <div id="root">
-      <div style="display:flex;justify-content:center;align-items:center;height:100%;color:#4ade80;font-family:monospace;font-size:24px;flex-direction:column;gap:16px;">
+      <div id="loader" style="display:flex;justify-content:center;align-items:center;height:100%;color:#4ade80;font-family:monospace;font-size:24px;flex-direction:column;gap:16px;">
         <div>INITIALIZING NEURAL LINK...</div>
         <div style="width: 200px; height: 4px; background: #333; border-radius: 2px;">
           <div style="width: 50%; height: 100%; background: #4ade80; animation: loading 1s infinite linear;"></div>
         </div>
+        <div id="loading-subtext" style="font-size: 12px; color: #666; margin-top: 10px;">Connecting to secure server...</div>
       </div>
       <style>
         @keyframes loading { 0% { width: 0%; margin-left: 0; } 50% { width: 100%; margin-left: 0; } 100% { width: 0%; margin-left: 100%; } }
@@ -72,12 +79,25 @@
       window.onerror = function(msg, url, lineNo, columnNo, error) {
         var container = document.getElementById('error-display');
         container.style.display = 'block';
-        container.innerHTML = '<strong>SYSTEM ERROR:</strong> ' + msg + '<br><small>' + url + ':' + lineNo + '</small>';
+        container.innerHTML += '<div><strong>ERROR:</strong> ' + msg + '<br><small>' + url + ':' + lineNo + '</small></div><br>';
+        document.getElementById('loader').style.display = 'none';
         return false;
       };
+
+      // Safety timeout: If app doesn't load in 5s, warn the user
+      setTimeout(function() {
+        var root = document.getElementById('root');
+        // If the loader is still visible (React hasn't cleared it)
+        if (document.getElementById('loader') && document.getElementById('loader').offsetParent !== null) {
+           var sub = document.getElementById('loading-subtext');
+           if(sub) sub.innerHTML = "Taking longer than expected... <br>If this stays stuck, check your browser console.";
+           sub.style.color = "#eab308";
+        }
+      }, 5000);
     </script>
 
-    <!-- Entry Point: Important for Vite/Build tools -->
-    <script type="module" src="./index.tsx"></script>
+    <!-- Main Entry Point -->
+    <!-- Type "text/babel" allows in-browser compilation for static hosting -->
+    <script type="text/babel" data-type="module" data-presets="react,typescript" src="./index.tsx"></script>
   </body>
 </html>

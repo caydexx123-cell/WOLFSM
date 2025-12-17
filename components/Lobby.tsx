@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { PlayerProfile } from '../types';
+import { PlayerProfile } from '../types.ts';
 import { Copy, CheckCircle2, Loader2, Play, Users } from 'lucide-react';
 
 interface LobbyScreenProps {

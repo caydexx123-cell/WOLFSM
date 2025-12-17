@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { PlayerProfile } from '../types';
-import { PawPrint, Shield, Wifi, WifiOff, Users, Play } from 'lucide-react';
+import { PlayerProfile } from '../types.ts';
+import { PawPrint, Shield, WifiOff, Play } from 'lucide-react';
 
 interface AuthScreenProps {
   profile: PlayerProfile;
@@ -83,7 +83,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ profile, onCreate, onJoi
       </div>
       
       <p className="absolute bottom-6 text-neutral-600 text-xs text-center max-w-xs">
-        Connect via Universal ID. Both players must be online. Game simulates local latency for fairness.
+        Connect via Universal ID. Both players must be online.
       </p>
     </div>
   );
