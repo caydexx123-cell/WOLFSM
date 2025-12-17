@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
-import { PawPrint, Shield, WifiOff, Play, Sword, Skull, Menu, Copy, CheckCircle2, Loader2, Users } from 'lucide-react';
+import { PawPrint, Shield, WifiOff, Play, Sword, Skull, Menu, Copy, CheckCircle2, Loader2, Users, Radio } from 'lucide-react';
 
 // --- TYPES ---
 export type ScreenState = 'AUTH' | 'LOBBY' | 'GAME';
@@ -41,21 +41,33 @@ export interface GameState {
   camera: Vec2;
 }
 
+// Network Packets
+type Packet = 
+  | { type: 'PLAYER_UPDATE'; data: Entity }
+  | { type: 'WORLD_UPDATE'; enemies: Entity[]; score: number }
+  | { type: 'GAME_START'; seed: number };
+
 // --- UTILS ---
 const dist = (a: Vec2, b: Vec2) => Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
 const lerp = (start: number, end: number, t: number) => start * (1 - t) + end * t;
+// Simple seeded random for consistent tree generation across clients
+const seededRandom = (seed: number) => {
+    const x = Math.sin(seed++) * 10000;
+    return x - Math.floor(x);
+};
 
 // --- COMPONENTS ---
 
 // 1. Auth Screen
 interface AuthScreenProps {
   profile: PlayerProfile;
+  peerId: string | null;
   onCreate: () => void;
   onJoin: (id: string) => void;
   onOffline: () => void;
 }
 
-const AuthScreen: React.FC<AuthScreenProps> = ({ profile, onCreate, onJoin, onOffline }) => {
+const AuthScreen: React.FC<AuthScreenProps> = ({ profile, peerId, onCreate, onJoin, onOffline }) => {
   const [joinId, setJoinId] = useState('');
 
   return (
@@ -65,7 +77,7 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ profile, onCreate, onJoin, onOf
           <h1 className="text-5xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-br from-green-400 to-emerald-800 uppercase italic transform -skew-x-12">
             Hotline Forest
           </h1>
-          <p className="text-neutral-400 mt-2 text-sm tracking-widest">PRIMAL INSTINCT // V1.0</p>
+          <p className="text-neutral-400 mt-2 text-sm tracking-widest">REAL-TIME MULTIPLAYER</p>
         </div>
 
         <div className="mb-6 bg-neutral-900/50 p-4 rounded border border-neutral-800 flex items-center justify-between">
@@ -74,11 +86,15 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ profile, onCreate, onJoin, onOf
               <PawPrint className="text-green-500 w-5 h-5" />
             </div>
             <div>
-              <p className="text-xs text-neutral-500 uppercase">Your Universal ID</p>
-              <p className="text-xl font-mono font-bold text-white tracking-wider">{profile.id}</p>
+              <p className="text-xs text-neutral-500 uppercase">Your Online ID</p>
+              {peerId ? (
+                <p className="text-xl font-mono font-bold text-white tracking-wider animate-pulse">{peerId}</p>
+              ) : (
+                 <p className="text-sm font-mono text-yellow-500 animate-bounce">CONNECTING...</p>
+              )}
             </div>
           </div>
-          <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse shadow-[0_0_10px_rgba(34,197,94,0.8)]" />
+          <div className={`h-2 w-2 rounded-full ${peerId ? 'bg-green-500' : 'bg-red-500'} animate-pulse shadow-[0_0_10px_rgba(34,197,94,0.8)]`} />
         </div>
 
         <div className="space-y-4">
@@ -97,29 +113,30 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ profile, onCreate, onJoin, onOf
 
           <div className="relative flex py-2 items-center">
             <div className="flex-grow border-t border-neutral-800"></div>
-            <span className="flex-shrink-0 mx-4 text-neutral-600 text-xs uppercase">Multiplayer</span>
+            <span className="flex-shrink-0 mx-4 text-neutral-600 text-xs uppercase">Online Multiplayer</span>
             <div className="flex-grow border-t border-neutral-800"></div>
           </div>
 
           <button 
             onClick={onCreate}
-            className="w-full bg-emerald-900/30 border border-emerald-500/30 hover:bg-emerald-800/50 p-4 rounded text-emerald-400 font-bold flex items-center justify-center gap-2 transition active:scale-95"
+            disabled={!peerId}
+            className="w-full bg-emerald-900/30 border border-emerald-500/30 hover:bg-emerald-800/50 disabled:opacity-50 p-4 rounded text-emerald-400 font-bold flex items-center justify-center gap-2 transition active:scale-95"
           >
             <Shield className="w-5 h-5" />
-            CREATE LOBBY
+            CREATE LOBBY (HOST)
           </button>
 
           <div className="flex gap-2">
             <input 
               type="text" 
-              placeholder="ENTER FRIEND ID"
+              placeholder="FRIEND'S ID"
               value={joinId}
               onChange={(e) => setJoinId(e.target.value.toUpperCase())}
               className="flex-1 bg-neutral-900 border border-neutral-700 rounded p-4 text-center font-mono placeholder:text-neutral-600 focus:outline-none focus:border-green-500 transition"
             />
             <button 
               onClick={() => joinId && onJoin(joinId)}
-              disabled={!joinId}
+              disabled={!joinId || !peerId}
               className="bg-neutral-800 border border-neutral-700 hover:border-white hover:bg-neutral-700 text-white p-4 rounded disabled:opacity-50 disabled:cursor-not-allowed font-bold"
             >
               JOIN
@@ -127,41 +144,61 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ profile, onCreate, onJoin, onOf
           </div>
         </div>
       </div>
-      
-      <p className="absolute bottom-6 text-neutral-600 text-xs text-center max-w-xs">
-        Connect via Universal ID. Both players must be online.
-      </p>
     </div>
   );
 };
 
 // 2. Lobby Screen
 interface LobbyScreenProps {
-  lobbyId: string;
   currentUser: PlayerProfile;
+  peerId: string;
+  conn: any; // PeerJS DataConnection
+  isHost: boolean;
   onStart: () => void;
   onBack: () => void;
 }
 
-const LobbyScreen: React.FC<LobbyScreenProps> = ({ lobbyId, currentUser, onStart, onBack }) => {
-  const [friendJoined, setFriendJoined] = useState(false);
+const LobbyScreen: React.FC<LobbyScreenProps> = ({ currentUser, peerId, conn, isHost, onStart, onBack }) => {
   const [copied, setCopied] = useState(false);
+  const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    if (!currentUser.isHost) {
-      setFriendJoined(true);
-      return;
+    if (conn) {
+       // If connection is already open
+       if (conn.open) setConnected(true);
+       
+       conn.on('open', () => {
+         setConnected(true);
+       });
+       
+       // If we are client, wait for start game message
+       if (!isHost) {
+         conn.on('data', (data: any) => {
+           if (data.type === 'GAME_START') {
+             onStart();
+           }
+         });
+       }
     }
-    const timer = setTimeout(() => {
-      setFriendJoined(true);
-    }, 3000 + Math.random() * 2000);
-    return () => clearTimeout(timer);
-  }, [currentUser.isHost]);
+  }, [conn, isHost, onStart]);
 
   const copyId = () => {
-    navigator.clipboard.writeText(lobbyId);
+    navigator.clipboard.writeText(peerId);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleHostStart = () => {
+    if (conn && conn.open) {
+      // Send start signal to client
+      const seed = Math.floor(Math.random() * 100000);
+      conn.send({ type: 'GAME_START', seed });
+      // We pass the seed via local storage or props context usually, but for now we'll inject it via a global hack or just prop
+      // For simplicity, Host starts immediately after sending.
+      // We need to pass seed to GameEngine.
+      (window as any).GAME_SEED = seed;
+      onStart();
+    }
   };
 
   return (
@@ -171,53 +208,53 @@ const LobbyScreen: React.FC<LobbyScreenProps> = ({ lobbyId, currentUser, onStart
           <div>
             <h2 className="text-2xl font-bold text-white flex items-center gap-2">
               <Users className="text-green-500" />
-              LOBBY
+              {isHost ? 'HOSTING LOBBY' : 'JOINING LOBBY'}
             </h2>
-            <p className="text-neutral-500 text-sm">Waiting for connection...</p>
+            <p className="text-neutral-500 text-sm">{connected ? 'Connection Established!' : 'Waiting for connection...'}</p>
           </div>
           <button onClick={onBack} className="text-red-500 hover:text-red-400 text-sm font-bold uppercase tracking-wider">
-            Leave
+            Disconnect
           </button>
         </div>
 
         <div className="p-8">
-          <div className="flex flex-col items-center mb-12">
-            <span className="text-neutral-500 text-xs uppercase mb-2">Share this ID with your friend</span>
-            <button 
-              onClick={copyId}
-              className="group relative bg-neutral-800 hover:bg-neutral-700 border-2 border-dashed border-neutral-600 hover:border-green-500 transition-all rounded-lg px-12 py-6 flex flex-col items-center gap-2"
-            >
-              <span className="text-4xl font-mono font-black tracking-[0.2em] text-white">
-                {lobbyId}
-              </span>
-              <div className="flex items-center gap-1 text-xs text-green-500 font-bold opacity-0 group-hover:opacity-100 transition-opacity absolute -bottom-8">
-                {copied ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                {copied ? "COPIED TO CLIPBOARD" : "CLICK TO COPY"}
-              </div>
-            </button>
-          </div>
+          {isHost && (
+            <div className="flex flex-col items-center mb-12">
+              <span className="text-neutral-500 text-xs uppercase mb-2">Your Lobby ID (Give to Friend)</span>
+              <button 
+                onClick={copyId}
+                className="group relative bg-neutral-800 hover:bg-neutral-700 border-2 border-dashed border-neutral-600 hover:border-green-500 transition-all rounded-lg px-12 py-6 flex flex-col items-center gap-2"
+              >
+                <span className="text-4xl font-mono font-black tracking-[0.2em] text-white">
+                  {peerId}
+                </span>
+                <div className="flex items-center gap-1 text-xs text-green-500 font-bold opacity-0 group-hover:opacity-100 transition-opacity absolute -bottom-8">
+                  {copied ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  {copied ? "COPIED" : "CLICK TO COPY"}
+                </div>
+              </button>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4 mb-8">
             <div className="bg-neutral-800/50 border border-green-500/50 p-4 rounded flex items-center gap-4">
-              <div className="w-12 h-12 bg-neutral-700 rounded-full flex items-center justify-center relative">
-                <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${currentUser.id}`} alt="avatar" className="w-10 h-10 rounded-full" />
-                <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-neutral-900 rounded-full"></div>
-              </div>
-              <div>
-                <p className="font-bold text-white">{currentUser.name} (You)</p>
-                <p className="text-xs text-green-400 font-mono">READY</p>
-              </div>
+               <div className="w-12 h-12 bg-neutral-700 rounded-full flex items-center justify-center relative">
+                 <div className="text-2xl">🐺</div> 
+               </div>
+               <div>
+                 <p className="font-bold text-white">You</p>
+                 <p className="text-xs text-green-400 font-mono">READY</p>
+               </div>
             </div>
 
-            <div className={`border p-4 rounded flex items-center gap-4 transition-all duration-500 ${friendJoined ? 'bg-neutral-800/50 border-orange-500/50' : 'bg-neutral-900 border-neutral-800 border-dashed'}`}>
-              {friendJoined ? (
+            <div className={`border p-4 rounded flex items-center gap-4 transition-all duration-500 ${connected ? 'bg-neutral-800/50 border-orange-500/50' : 'bg-neutral-900 border-neutral-800 border-dashed'}`}>
+              {connected ? (
                 <>
                   <div className="w-12 h-12 bg-neutral-700 rounded-full flex items-center justify-center relative">
-                     <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${lobbyId}`} alt="avatar" className="w-10 h-10 rounded-full" />
-                    <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-neutral-900 rounded-full"></div>
+                     <div className="text-2xl">🦊</div>
                   </div>
-                  <div className="animate-in fade-in slide-in-from-right-4">
-                    <p className="font-bold text-white">Friend-Fox</p>
+                  <div>
+                    <p className="font-bold text-white">Real Player</p>
                     <p className="text-xs text-orange-400 font-mono">CONNECTED</p>
                   </div>
                 </>
@@ -226,28 +263,26 @@ const LobbyScreen: React.FC<LobbyScreenProps> = ({ lobbyId, currentUser, onStart
                   <div className="w-12 h-12 rounded-full border-2 border-neutral-700 border-t-neutral-500 animate-spin"></div>
                   <div>
                     <p className="font-bold text-neutral-500">Waiting...</p>
-                    <p className="text-xs text-neutral-600 font-mono">SCANNING NETWORK</p>
+                    <p className="text-xs text-neutral-600 font-mono">SCANNING</p>
                   </div>
                 </>
               )}
             </div>
           </div>
 
-          <button
-            onClick={onStart}
-            disabled={!friendJoined}
-            className="w-full bg-gradient-to-r from-green-600 to-emerald-700 disabled:from-neutral-800 disabled:to-neutral-800 disabled:text-neutral-500 hover:from-green-500 hover:to-emerald-600 text-white font-black text-xl py-6 rounded-lg shadow-lg shadow-green-900/30 transition-all active:scale-[0.99] flex items-center justify-center gap-3 uppercase tracking-wider"
-          >
-            {friendJoined ? (
-              <>
-                <Play className="fill-current" /> Enter The Forest
-              </>
-            ) : (
-              <>
-                <Loader2 className="animate-spin" /> Waiting for Player 2
-              </>
-            )}
-          </button>
+          {isHost ? (
+             <button
+              onClick={handleHostStart}
+              disabled={!connected}
+              className="w-full bg-gradient-to-r from-green-600 to-emerald-700 disabled:from-neutral-800 disabled:to-neutral-800 disabled:text-neutral-500 hover:from-green-500 hover:to-emerald-600 text-white font-black text-xl py-6 rounded-lg shadow-lg shadow-green-900/30 transition-all active:scale-[0.99] flex items-center justify-center gap-3 uppercase tracking-wider"
+            >
+              {connected ? <><Play className="fill-current" /> START GAME</> : <><Loader2 className="animate-spin" /> WAITING FOR PLAYER...</>}
+            </button>
+          ) : (
+             <div className="text-center p-6 bg-neutral-800 rounded-lg animate-pulse">
+                <p className="text-green-400 font-bold uppercase tracking-widest">Waiting for Host to start...</p>
+             </div>
+          )}
         </div>
       </div>
     </div>
@@ -262,10 +297,12 @@ const SPAWN_ZONE_RADIUS = 300;
 
 interface GameEngineProps {
   isMultiplayer: boolean;
+  isHost: boolean;
+  conn: any; // PeerJS connection
   onExit: () => void;
 }
 
-const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
+const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, conn, onExit }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>();
   const [hudState, setHudState] = useState({ hp: 100, score: 0, gameOver: false });
@@ -288,7 +325,7 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
       walkCycle: 0,
       color: '#64748b'
     },
-    friend: undefined,
+    friend: undefined, // Will be the remote player
     enemies: [],
     trees: [],
     score: 0,
@@ -296,31 +333,10 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
     camera: { x: SPAWN_ZONE_CENTER.x, y: SPAWN_ZONE_CENTER.y }
   });
 
+  // Handle incoming data
   useEffect(() => {
-    const newTrees: Entity[] = [];
-    for (let i = 0; i < 200; i++) {
-      const pos = { x: Math.random() * CANVAS_WIDTH, y: Math.random() * CANVAS_HEIGHT };
-      if (dist(pos, SPAWN_ZONE_CENTER) > SPAWN_ZONE_RADIUS + 50) {
-        newTrees.push({
-          id: `tree-${i}`,
-          pos,
-          velocity: { x: 0, y: 0 },
-          rotation: Math.random() * Math.PI * 2,
-          radius: 40 + Math.random() * 50,
-          type: 'TREE',
-          hp: 100,
-          maxHp: 100,
-          isAttacking: false,
-          attackCooldown: 0,
-          walkCycle: 0,
-          color: '#14532d'
-        });
-      }
-    }
-    state.current.trees = newTrees;
-    spawnEnemies(5);
-
-    if (isMultiplayer) {
+    if (isMultiplayer && conn) {
+      // Set initial friend state
       state.current.friend = {
         id: 'p2',
         pos: { x: SPAWN_ZONE_CENTER.x + 60, y: SPAWN_ZONE_CENTER.y },
@@ -335,8 +351,74 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
         walkCycle: 0,
         color: '#d97706'
       };
-    }
 
+      conn.on('data', (data: Packet) => {
+        if (data.type === 'PLAYER_UPDATE' && state.current.friend) {
+           // Update friend position instantly (naive approach, can add interpolation later)
+           const f = state.current.friend;
+           f.pos = data.data.pos;
+           f.rotation = data.data.rotation;
+           f.walkCycle = data.data.walkCycle;
+           f.isAttacking = data.data.isAttacking;
+           f.hp = data.data.hp;
+        }
+        if (data.type === 'WORLD_UPDATE' && !isHost) {
+           // Client receives world state from Host
+           state.current.enemies = data.enemies;
+           state.current.score = data.score;
+        }
+        if (data.type === 'GAME_START') {
+           // Just in case we missed it in lobby
+           (window as any).GAME_SEED = data.seed;
+           initWorld(data.seed);
+        }
+      });
+    }
+    
+    // Initial World Gen
+    const seed = (window as any).GAME_SEED || Math.random();
+    initWorld(seed);
+    
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMultiplayer, isHost, conn]);
+
+  const initWorld = (seed: number) => {
+    // Generate Trees Deterministically based on seed
+    const newTrees: Entity[] = [];
+    let currentSeed = seed;
+    
+    for (let i = 0; i < 200; i++) {
+      currentSeed += 1;
+      const r1 = seededRandom(currentSeed);
+      currentSeed += 1;
+      const r2 = seededRandom(currentSeed);
+      
+      const pos = { x: r1 * CANVAS_WIDTH, y: r2 * CANVAS_HEIGHT };
+      if (dist(pos, SPAWN_ZONE_CENTER) > SPAWN_ZONE_RADIUS + 50) {
+        newTrees.push({
+          id: `tree-${i}`,
+          pos,
+          velocity: { x: 0, y: 0 },
+          rotation: seededRandom(currentSeed + 5) * Math.PI * 2,
+          radius: 40 + seededRandom(currentSeed + 6) * 50,
+          type: 'TREE',
+          hp: 100,
+          maxHp: 100,
+          isAttacking: false,
+          attackCooldown: 0,
+          walkCycle: 0,
+          color: '#14532d'
+        });
+      }
+    }
+    state.current.trees = newTrees;
+    
+    if (!isMultiplayer || isHost) {
+      spawnEnemies(5);
+    }
+  };
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       keys.current[e.code] = true;
       if (e.code === 'Space') handleAttack();
@@ -357,7 +439,8 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
       window.removeEventListener('mousemove', handleMouseMove);
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [isMultiplayer]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const spawnEnemies = (count: number) => {
     for (let i = 0; i < count; i++) {
@@ -391,6 +474,8 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
       const attackRange = 140;
       const attackAngle = 1.2;
       
+      // Hit logic - only host calculates hits on enemies, but clients can push visually
+      // For simplicity: Both simulate hits locally, but Host overwrites enemy HP next frame
       state.current.enemies.forEach(enemy => {
         const dx = enemy.pos.x - p.pos.x;
         const dy = enemy.pos.y - p.pos.y;
@@ -401,6 +486,7 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
           while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
           while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
           if (Math.abs(angleDiff) < attackAngle) {
+            // Apply damage instantly locally for responsiveness
             enemy.hp -= 35;
             enemy.pos.x += Math.cos(angleToEnemy) * 30;
             enemy.pos.y += Math.sin(angleToEnemy) * 30;
@@ -417,6 +503,31 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
       return; 
     }
     updatePhysics(s);
+    
+    // --- NETWORKING SYNC ---
+    if (isMultiplayer && conn && conn.open) {
+      // 1. Send my player state
+      conn.send({ 
+        type: 'PLAYER_UPDATE', 
+        data: {
+          pos: s.player.pos,
+          rotation: s.player.rotation,
+          walkCycle: s.player.walkCycle,
+          isAttacking: s.player.isAttacking,
+          hp: s.player.hp
+        }
+      });
+
+      // 2. If Host, send World State
+      if (isHost) {
+        conn.send({
+          type: 'WORLD_UPDATE',
+          enemies: s.enemies,
+          score: s.score
+        });
+      }
+    }
+
     render(s);
     if (Math.random() > 0.9) {
       setHudState({ hp: s.player.hp, score: s.score, gameOver: s.gameOver });
@@ -463,58 +574,61 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
         if (s.player.attackCooldown <= 0) s.player.isAttacking = false;
     }
 
-    if (s.friend) {
-        const distToPlayer = dist(s.friend.pos, s.player.pos);
-        if (distToPlayer > 180) {
-           const fdx = s.player.pos.x - s.friend.pos.x;
-           const fdy = s.player.pos.y - s.friend.pos.y;
-           const angle = Math.atan2(fdy, fdx);
-           s.friend.pos.x += Math.cos(angle) * (speed * 0.95);
-           s.friend.pos.y += Math.sin(angle) * (speed * 0.95);
-           s.friend.rotation = angle;
-           s.friend.walkCycle += 0.3;
-        } else {
-           s.friend.walkCycle = 0;
-        }
-    }
+    // --- ENEMY LOGIC (HOST ONLY) ---
+    // If client, we trust the 'enemies' array from the host (updated in 'data' listener)
+    // We only simulate enemy pushback/physics locally for smoothness if needed, but logic is Host
+    if (!isMultiplayer || isHost) {
+        s.enemies.forEach(enemy => {
+            const distToPlayer = dist(enemy.pos, s.player.pos);
+            // Check friend dist too
+            let target = s.player.pos;
+            let closestDist = distToPlayer;
 
-    s.enemies.forEach(enemy => {
-        const distToPlayer = dist(enemy.pos, s.player.pos);
-        const distToSpawn = dist(enemy.pos, SPAWN_ZONE_CENTER);
-        
-        let target = s.player.pos;
-        if (distToSpawn < SPAWN_ZONE_RADIUS + 50) {
-             const angleAway = Math.atan2(enemy.pos.y - SPAWN_ZONE_CENTER.y, enemy.pos.x - SPAWN_ZONE_CENTER.x);
-             enemy.pos.x += Math.cos(angleAway) * 2;
-             enemy.pos.y += Math.sin(angleAway) * 2;
-             enemy.rotation = angleAway;
-             enemy.walkCycle += 0.2;
-        } else if (distToPlayer < 700) {
-            const edx = target.x - enemy.pos.x;
-            const edy = target.y - enemy.pos.y;
-            const angle = Math.atan2(edy, edx);
-            enemy.rotation = angle;
-            enemy.pos.x += Math.cos(angle) * 4;
-            enemy.pos.y += Math.sin(angle) * 4;
-            enemy.walkCycle += 0.25;
-
-            if (distToPlayer < 45 && enemy.attackCooldown <= 0) {
-               s.player.hp -= 15;
-               enemy.attackCooldown = 60;
-               enemy.isAttacking = true;
-               setTimeout(() => { enemy.isAttacking = false; }, 300);
+            if (s.friend) {
+                const distToFriend = dist(enemy.pos, s.friend.pos);
+                if (distToFriend < closestDist) {
+                    target = s.friend.pos;
+                    closestDist = distToFriend;
+                }
             }
+
+            const distToSpawn = dist(enemy.pos, SPAWN_ZONE_CENTER);
+            
+            if (distToSpawn < SPAWN_ZONE_RADIUS + 50) {
+                const angleAway = Math.atan2(enemy.pos.y - SPAWN_ZONE_CENTER.y, enemy.pos.x - SPAWN_ZONE_CENTER.x);
+                enemy.pos.x += Math.cos(angleAway) * 2;
+                enemy.pos.y += Math.sin(angleAway) * 2;
+                enemy.rotation = angleAway;
+                enemy.walkCycle += 0.2;
+            } else if (closestDist < 700) {
+                const edx = target.x - enemy.pos.x;
+                const edy = target.y - enemy.pos.y;
+                const angle = Math.atan2(edy, edx);
+                enemy.rotation = angle;
+                enemy.pos.x += Math.cos(angle) * 4;
+                enemy.pos.y += Math.sin(angle) * 4;
+                enemy.walkCycle += 0.25;
+
+                // Attack Player 1
+                if (distToPlayer < 45 && enemy.attackCooldown <= 0) {
+                   s.player.hp -= 15;
+                   enemy.attackCooldown = 60;
+                   enemy.isAttacking = true;
+                   setTimeout(() => { enemy.isAttacking = false; }, 300);
+                }
+            }
+            if (enemy.attackCooldown > 0) enemy.attackCooldown--;
+        });
+
+        const aliveEnemies = s.enemies.filter(e => e.hp > 0);
+        if (aliveEnemies.length < s.enemies.length) {
+            s.score += (s.enemies.length - aliveEnemies.length) * 100;
+            if (aliveEnemies.length < 4) spawnEnemies(3);
         }
-        if (enemy.attackCooldown > 0) enemy.attackCooldown--;
-    });
-
-    const aliveEnemies = s.enemies.filter(e => e.hp > 0);
-    if (aliveEnemies.length < s.enemies.length) {
-        s.score += (s.enemies.length - aliveEnemies.length) * 100;
-        if (aliveEnemies.length < 4) spawnEnemies(3);
+        s.enemies = aliveEnemies;
     }
-    s.enemies = aliveEnemies;
 
+    // --- COLLISION ---
     const entities = [s.player, ...s.enemies];
     if (s.friend) entities.push(s.friend);
     entities.forEach(ent => {
@@ -548,6 +662,7 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
     ctx.save();
     ctx.translate(cvs.width / 2 - s.camera.x, cvs.height / 2 - s.camera.y);
 
+    // Spawn Zone
     ctx.save();
     ctx.beginPath();
     ctx.arc(SPAWN_ZONE_CENTER.x, SPAWN_ZONE_CENTER.y, SPAWN_ZONE_RADIUS, 0, Math.PI * 2);
@@ -556,14 +671,9 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
     ctx.lineWidth = 4;
     ctx.strokeStyle = '#334155';
     ctx.stroke();
-    ctx.clip();
-    ctx.strokeStyle = '#334155';
-    ctx.globalAlpha = 0.3;
-    for (let i = SPAWN_ZONE_CENTER.x - SPAWN_ZONE_RADIUS; i < SPAWN_ZONE_CENTER.x + SPAWN_ZONE_RADIUS; i+=50) {
-        ctx.beginPath(); ctx.moveTo(i, SPAWN_ZONE_CENTER.y - SPAWN_ZONE_RADIUS); ctx.lineTo(i, SPAWN_ZONE_CENTER.y + SPAWN_ZONE_RADIUS); ctx.stroke();
-    }
     ctx.restore();
 
+    // Grid
     ctx.strokeStyle = '#1e293b';
     ctx.lineWidth = 2;
     const gridSize = 100;
@@ -767,6 +877,12 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
             <div className="text-white font-mono text-xl font-bold drop-shadow-md bg-black/30 px-2 rounded inline-block">
                 SCORE: {hudState.score}
             </div>
+            {isMultiplayer && (
+               <div className="flex items-center gap-2 bg-black/30 px-2 rounded w-fit">
+                  <Radio className="w-4 h-4 text-green-500 animate-pulse" />
+                  <span className="text-xs text-green-500 font-mono">LIVE LINK</span>
+               </div>
+            )}
         </div>
 
         <div className="absolute bottom-10 left-10 w-32 h-32 rounded-full border-2 border-white/20 bg-black/20 backdrop-blur-sm touch-none flex items-center justify-center z-50"
@@ -824,37 +940,66 @@ const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
 function App() {
   const [screen, setScreen] = useState<ScreenState>('AUTH');
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
-  const [lobbyId, setLobbyId] = useState<string | null>(null);
+  const [peerId, setPeerId] = useState<string | null>(null);
   const [isMultiplayer, setIsMultiplayer] = useState<boolean>(false);
+  const [conn, setConn] = useState<any>(null); // PeerJS connection
+
+  // PeerJS Instance
+  const peerRef = useRef<any>(null);
 
   useEffect(() => {
-    try {
-      const savedId = localStorage.getItem('fh_player_id');
-      if (savedId) {
-        setProfile({ id: savedId, name: `Wolf-${savedId.substring(0, 4)}`, isHost: false });
-      } else {
-        const newId = Math.random().toString(36).substring(2, 8).toUpperCase();
-        localStorage.setItem('fh_player_id', newId);
-        setProfile({ id: newId, name: `Wolf-${newId.substring(0, 4)}`, isHost: false });
-      }
-    } catch (e) {
-      const newId = Math.random().toString(36).substring(2, 8).toUpperCase();
-      setProfile({ id: newId, name: `Wolf-${newId.substring(0, 4)}`, isHost: false });
+    // 1. Create Profile
+    let id = localStorage.getItem('fh_player_id');
+    if (!id) {
+       id = Math.random().toString(36).substring(2, 6).toUpperCase();
+       localStorage.setItem('fh_player_id', id);
     }
+    setProfile({ id: id!, name: `Wolf-${id}`, isHost: false });
+
+    // 2. Initialize PeerJS
+    const initPeer = async () => {
+        // @ts-ignore
+        if (!window.Peer) return; // Wait for script load
+        // @ts-ignore
+        const peer = new window.Peer(id, { debug: 1 }); // Use our ID as Peer ID
+        peer.on('open', (id: string) => {
+            console.log('My peer ID is: ' + id);
+            setPeerId(id);
+        });
+        peer.on('connection', (c: any) => {
+            console.log('Incoming connection');
+            setConn(c);
+            setIsMultiplayer(true);
+            setProfile(p => p ? ({ ...p, isHost: true }) : null); // I am receiving, so I am likely host or P2P equal
+            // Wait for user to click "Start" in lobby if host
+        });
+        peerRef.current = peer;
+    };
+
+    const interval = setInterval(() => {
+       // @ts-ignore
+       if(window.Peer && !peerRef.current) {
+          initPeer();
+          clearInterval(interval);
+       }
+    }, 500);
+
+    return () => {
+       if(peerRef.current) peerRef.current.destroy();
+    };
   }, []);
 
   const handleCreateLobby = () => {
     if (!profile) return;
-    const newLobbyId = Math.random().toString(36).substring(2, 6).toUpperCase();
-    setLobbyId(newLobbyId);
     setProfile({ ...profile, isHost: true });
     setIsMultiplayer(true);
     setScreen('LOBBY');
   };
 
-  const handleJoinLobby = (id: string) => {
-    if (!profile) return;
-    setLobbyId(id);
+  const handleJoinLobby = (hostId: string) => {
+    if (!profile || !peerRef.current) return;
+    const conn = peerRef.current.connect(hostId);
+    setConn(conn);
     setProfile({ ...profile, isHost: false });
     setIsMultiplayer(true);
     setScreen('LOBBY');
@@ -871,7 +1016,11 @@ function App() {
 
   const handleBack = () => {
     setScreen('AUTH');
-    setLobbyId(null);
+    if (conn) {
+       conn.close();
+       setConn(null);
+    }
+    // Re-init peer logic if needed, but usually keep peer open
   };
 
   return (
@@ -881,17 +1030,20 @@ function App() {
 
       {screen === 'AUTH' && profile && (
         <AuthScreen 
-          profile={profile} 
+          profile={profile}
+          peerId={peerId} 
           onCreate={handleCreateLobby} 
           onJoin={handleJoinLobby} 
           onOffline={handlePlayOffline} 
         />
       )}
 
-      {screen === 'LOBBY' && profile && lobbyId && (
+      {screen === 'LOBBY' && profile && peerId && (
         <LobbyScreen 
-          lobbyId={lobbyId} 
-          currentUser={profile} 
+          currentUser={profile}
+          peerId={peerId}
+          conn={conn}
+          isHost={profile.isHost}
           onStart={handleStartGame} 
           onBack={handleBack}
         />
@@ -900,7 +1052,9 @@ function App() {
       {screen === 'GAME' && profile && (
         <GameEngine 
           isMultiplayer={isMultiplayer} 
-          onExit={() => setScreen('AUTH')} 
+          isHost={profile.isHost}
+          conn={conn}
+          onExit={handleBack} 
         />
       )}
     </div>
@@ -912,10 +1066,7 @@ const rootElement = document.getElementById('root');
 if (!rootElement) {
   throw new Error("Could not find root element to mount to");
 }
-
-// Clear any existing content to remove the loader
 rootElement.innerHTML = '';
-
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>

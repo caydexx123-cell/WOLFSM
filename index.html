@@ -6,8 +6,10 @@
     <title>Forest Hotline</title>
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Babel for browser-side compilation (Fixes GitHub Pages static hosting issues) -->
+    <!-- Babel for browser-side compilation -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- PeerJS for Real P2P Multiplayer -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     
     <style>
       html, body, #root {
@@ -67,7 +69,7 @@
         <div style="width: 200px; height: 4px; background: #333; border-radius: 2px;">
           <div style="width: 50%; height: 100%; background: #4ade80; animation: loading 1s infinite linear;"></div>
         </div>
-        <div id="loading-subtext" style="font-size: 12px; color: #666; margin-top: 10px;">Compiling simulation... please wait...</div>
+        <div id="loading-subtext" style="font-size: 12px; color: #666; margin-top: 10px;">Connecting to global network...</div>
       </div>
       <style>
         @keyframes loading { 0% { width: 0%; margin-left: 0; } 50% { width: 100%; margin-left: 0; } 100% { width: 0%; margin-left: 100%; } }
@@ -84,20 +86,18 @@
         return false;
       };
 
-      // Safety timeout: If app doesn't load in 5s, warn the user
+      // Safety timeout
       setTimeout(function() {
         var root = document.getElementById('root');
-        // If the loader is still visible (React hasn't cleared it)
         if (document.getElementById('loader') && document.getElementById('loader').offsetParent !== null) {
            var sub = document.getElementById('loading-subtext');
-           if(sub) sub.innerHTML = "Taking longer than expected... <br>If this stays stuck, check your browser console.";
+           if(sub) sub.innerHTML = "Taking longer than expected... <br>Check your internet connection.";
            sub.style.color = "#eab308";
         }
       }, 5000);
     </script>
 
     <!-- Main Entry Point -->
-    <!-- Type "text/babel" allows in-browser compilation for static hosting -->
     <script type="text/babel" data-type="module" data-presets="react,typescript" src="./index.tsx"></script>
   </body>
 </html>
