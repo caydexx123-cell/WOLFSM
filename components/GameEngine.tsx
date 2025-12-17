@@ -1,9 +1,9 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Entity, GameState, Vec2 } from '../types.ts';
-import { Sword, Skull, Menu } from 'lucide-react';
+import { Sword, Skull, Menu, Radio } from 'lucide-react';
 
 const FPS = 60;
-const CANVAS_WIDTH = 2500; // Slightly larger map
+const CANVAS_WIDTH = 2500;
 const CANVAS_HEIGHT = 2500;
 
 // Spawn Zone Configuration
@@ -12,24 +12,28 @@ const SPAWN_ZONE_RADIUS = 300;
 
 interface GameEngineProps {
   isMultiplayer: boolean;
+  isHost: boolean;
+  conn: any;
   onExit: () => void;
 }
 
 // Utils
 const dist = (a: Vec2, b: Vec2) => Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
 const lerp = (start: number, end: number, t: number) => start * (1 - t) + end * t;
+const seededRandom = (seed: number) => {
+    const x = Math.sin(seed++) * 10000;
+    return x - Math.floor(x);
+};
 
-export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit }) => {
+export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, conn, onExit }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>();
   const [hudState, setHudState] = useState({ hp: 100, score: 0, gameOver: false });
   
-  // Controls state
   const keys = useRef<{ [key: string]: boolean }>({});
   const mouse = useRef<Vec2>({ x: 0, y: 0 });
   const joystickRef = useRef<{ active: boolean, dx: number, dy: number }>({ active: false, dx: 0, dy: 0 });
   
-  // Game State Ref
   const state = useRef<GameState>({
     player: {
       id: 'p1',
@@ -43,7 +47,7 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
       isAttacking: false,
       attackCooldown: 0,
       walkCycle: 0,
-      color: '#64748b' // Slate-500 (Wolf Coat)
+      color: '#64748b'
     },
     friend: undefined,
     enemies: [],
@@ -53,38 +57,9 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
     camera: { x: SPAWN_ZONE_CENTER.x, y: SPAWN_ZONE_CENTER.y }
   });
 
-  // Initialization
   useEffect(() => {
-    // Generate Trees (Avoid Spawn Zone)
-    const newTrees: Entity[] = [];
-    for (let i = 0; i < 200; i++) {
-      const pos = { x: Math.random() * CANVAS_WIDTH, y: Math.random() * CANVAS_HEIGHT };
-      
-      // Ensure trees don't spawn in the safe zone
-      if (dist(pos, SPAWN_ZONE_CENTER) > SPAWN_ZONE_RADIUS + 50) {
-        newTrees.push({
-          id: `tree-${i}`,
-          pos,
-          velocity: { x: 0, y: 0 },
-          rotation: Math.random() * Math.PI * 2,
-          radius: 40 + Math.random() * 50,
-          type: 'TREE',
-          hp: 100,
-          maxHp: 100,
-          isAttacking: false,
-          attackCooldown: 0,
-          walkCycle: 0,
-          color: '#14532d' // Dark green
-        });
-      }
-    }
-    state.current.trees = newTrees;
-
-    // Generate Initial Enemies (Outside spawn zone)
-    spawnEnemies(5);
-
-    // Setup friend if multiplayer
-    if (isMultiplayer) {
+    // 1. Setup Friend if Multiplayer (REAL connection)
+    if (isMultiplayer && conn) {
       state.current.friend = {
         id: 'p2',
         pos: { x: SPAWN_ZONE_CENTER.x + 60, y: SPAWN_ZONE_CENTER.y },
@@ -97,11 +72,64 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
         isAttacking: false,
         attackCooldown: 0,
         walkCycle: 0,
-        color: '#d97706' // Amber-600 (Fox Orange)
+        color: '#d97706' // Orange for friend
       };
+
+      // Handle Data
+      conn.on('data', (data: any) => {
+        if (data.type === 'PLAYER_UPDATE' && state.current.friend) {
+           const f = state.current.friend;
+           f.pos = data.data.pos;
+           f.rotation = data.data.rotation;
+           f.walkCycle = data.data.walkCycle;
+           f.isAttacking = data.data.isAttacking;
+           f.hp = data.data.hp;
+        }
+        if (data.type === 'WORLD_UPDATE' && !isHost) {
+           // Client receives world state
+           state.current.enemies = data.enemies;
+           state.current.score = data.score;
+        }
+      });
     }
 
-    // Input Listeners
+    // 2. Generate World (Deterministic if seed present)
+    const seed = (window as any).GAME_SEED || Math.random() * 10000;
+    let currentSeed = seed;
+
+    const newTrees: Entity[] = [];
+    for (let i = 0; i < 200; i++) {
+      currentSeed += 1;
+      const r1 = seededRandom(currentSeed);
+      currentSeed += 1;
+      const r2 = seededRandom(currentSeed);
+      
+      const pos = { x: r1 * CANVAS_WIDTH, y: r2 * CANVAS_HEIGHT };
+      
+      if (dist(pos, SPAWN_ZONE_CENTER) > SPAWN_ZONE_RADIUS + 50) {
+        newTrees.push({
+          id: `tree-${i}`,
+          pos,
+          velocity: { x: 0, y: 0 },
+          rotation: seededRandom(currentSeed) * Math.PI * 2,
+          radius: 40 + seededRandom(currentSeed+1) * 50,
+          type: 'TREE',
+          hp: 100,
+          maxHp: 100,
+          isAttacking: false,
+          attackCooldown: 0,
+          walkCycle: 0,
+          color: '#14532d'
+        });
+      }
+    }
+    state.current.trees = newTrees;
+
+    // Only Host spawns enemies initially
+    if (!isMultiplayer || isHost) {
+        spawnEnemies(5);
+    }
+
     const handleKeyDown = (e: KeyboardEvent) => {
       keys.current[e.code] = true;
       if (e.code === 'Space') handleAttack();
@@ -115,7 +143,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
     window.addEventListener('keyup', handleKeyUp);
     window.addEventListener('mousemove', handleMouseMove);
 
-    // Start Loop
     requestRef.current = requestAnimationFrame(gameLoop);
 
     return () => {
@@ -124,17 +151,14 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
       window.removeEventListener('mousemove', handleMouseMove);
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMultiplayer]);
+  }, [isMultiplayer, isHost, conn]);
 
   const spawnEnemies = (count: number) => {
     for (let i = 0; i < count; i++) {
       let pos = { x: Math.random() * CANVAS_WIDTH, y: Math.random() * CANVAS_HEIGHT };
-      // Keep away from player and outside spawn zone
       while(dist(pos, state.current.player.pos) < 600 || dist(pos, SPAWN_ZONE_CENTER) < SPAWN_ZONE_RADIUS) {
         pos = { x: Math.random() * CANVAS_WIDTH, y: Math.random() * CANVAS_HEIGHT };
       }
-      
       state.current.enemies.push({
         id: `enemy-${Date.now()}-${i}`,
         pos,
@@ -147,7 +171,7 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
         isAttacking: false,
         attackCooldown: 0,
         walkCycle: 0,
-        color: '#171717' // Neutral-900 (Black Wolf)
+        color: '#171717'
       });
     }
   };
@@ -157,12 +181,12 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
     const p = state.current.player;
     if (p.attackCooldown <= 0) {
       p.isAttacking = true;
-      p.attackCooldown = 25; // Frames
+      p.attackCooldown = 25;
       
-      // Hit detection
       const attackRange = 140;
-      const attackAngle = 1.2; // Wide swipe
+      const attackAngle = 1.2;
       
+      // Local simulation for immediate feedback
       state.current.enemies.forEach(enemy => {
         const dx = enemy.pos.x - p.pos.x;
         const dy = enemy.pos.y - p.pos.y;
@@ -176,7 +200,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
           
           if (Math.abs(angleDiff) < attackAngle) {
             enemy.hp -= 35;
-            // Pushback
             enemy.pos.x += Math.cos(angleToEnemy) * 30;
             enemy.pos.y += Math.sin(angleToEnemy) * 30;
           }
@@ -193,6 +216,29 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
     }
 
     updatePhysics(s);
+    
+    // --- NETWORK SEND ---
+    if (isMultiplayer && conn && conn.open) {
+       conn.send({
+         type: 'PLAYER_UPDATE',
+         data: {
+           pos: s.player.pos,
+           rotation: s.player.rotation,
+           walkCycle: s.player.walkCycle,
+           isAttacking: s.player.isAttacking,
+           hp: s.player.hp
+         }
+       });
+
+       if (isHost) {
+         conn.send({
+           type: 'WORLD_UPDATE',
+           enemies: s.enemies,
+           score: s.score
+         });
+       }
+    }
+
     render(s);
 
     if (Math.random() > 0.9) {
@@ -207,7 +253,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
     let dx = 0;
     let dy = 0;
 
-    // Inputs
     if (keys.current['KeyW'] || keys.current['ArrowUp']) dy = -1;
     if (keys.current['KeyS'] || keys.current['ArrowDown']) dy = 1;
     if (keys.current['KeyA'] || keys.current['ArrowLeft']) dx = -1;
@@ -218,24 +263,18 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
       dy = joystickRef.current.dy;
     }
 
-    // Move Player
     if (dx !== 0 || dy !== 0) {
       const len = Math.sqrt(dx*dx + dy*dy);
       s.player.pos.x += (dx / len) * speed;
       s.player.pos.y += (dy / len) * speed;
-      
-      // Animate Walk Cycle
       s.player.walkCycle += 0.3;
-      
       if (joystickRef.current.active) {
         s.player.rotation = Math.atan2(dy, dx);
       }
     } else {
-        // Reset walk cycle to stance
         s.player.walkCycle = 0;
     }
 
-    // Mouse Rotation
     if (!joystickRef.current.active && canvasRef.current) {
         const rect = canvasRef.current.getBoundingClientRect();
         const worldMouseX = s.camera.x + (mouse.current.x - rect.left - rect.width/2);
@@ -243,71 +282,61 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
         s.player.rotation = Math.atan2(worldMouseY - s.player.pos.y, worldMouseX - s.player.pos.x);
     }
 
-    // Cooldowns
     if (s.player.attackCooldown > 0) {
         s.player.attackCooldown--;
         if (s.player.attackCooldown <= 0) s.player.isAttacking = false;
     }
 
-    // Friend Logic
-    if (s.friend) {
-        const distToPlayer = dist(s.friend.pos, s.player.pos);
-        if (distToPlayer > 180) {
-           const fdx = s.player.pos.x - s.friend.pos.x;
-           const fdy = s.player.pos.y - s.friend.pos.y;
-           const angle = Math.atan2(fdy, fdx);
-           s.friend.pos.x += Math.cos(angle) * (speed * 0.95);
-           s.friend.pos.y += Math.sin(angle) * (speed * 0.95);
-           s.friend.rotation = angle;
-           s.friend.walkCycle += 0.3;
-        } else {
-           s.friend.walkCycle = 0;
-        }
-    }
+    // Host Logic for Enemies
+    if (!isMultiplayer || isHost) {
+        s.enemies.forEach(enemy => {
+            const distToPlayer = dist(enemy.pos, s.player.pos);
+            let target = s.player.pos;
+            let closestDist = distToPlayer;
 
-    // Enemy AI
-    s.enemies.forEach(enemy => {
-        const distToPlayer = dist(enemy.pos, s.player.pos);
-        const distToSpawn = dist(enemy.pos, SPAWN_ZONE_CENTER);
-        
-        // Enemies won't enter spawn zone aggressively, but will patrol outside
-        let target = s.player.pos;
-        
-        if (distToSpawn < SPAWN_ZONE_RADIUS + 50) {
-             // Flee from spawn zone if too close
-             const angleAway = Math.atan2(enemy.pos.y - SPAWN_ZONE_CENTER.y, enemy.pos.x - SPAWN_ZONE_CENTER.x);
-             enemy.pos.x += Math.cos(angleAway) * 2;
-             enemy.pos.y += Math.sin(angleAway) * 2;
-             enemy.rotation = angleAway;
-             enemy.walkCycle += 0.2;
-        } else if (distToPlayer < 700) {
-            // Chase
-            const edx = target.x - enemy.pos.x;
-            const edy = target.y - enemy.pos.y;
-            const angle = Math.atan2(edy, edx);
-            enemy.rotation = angle;
-            enemy.pos.x += Math.cos(angle) * 4;
-            enemy.pos.y += Math.sin(angle) * 4;
-            enemy.walkCycle += 0.25;
-
-            if (distToPlayer < 45 && enemy.attackCooldown <= 0) {
-               s.player.hp -= 15;
-               enemy.attackCooldown = 60;
-               enemy.isAttacking = true;
-               setTimeout(() => { enemy.isAttacking = false; }, 300); // Visual flick
+            // Target Friend if closer
+            if (s.friend) {
+                const distToFriend = dist(enemy.pos, s.friend.pos);
+                if (distToFriend < closestDist) {
+                    target = s.friend.pos;
+                    closestDist = distToFriend;
+                }
             }
-        }
-        
-        if (enemy.attackCooldown > 0) enemy.attackCooldown--;
-    });
 
-    // Clean up
-    const aliveEnemies = s.enemies.filter(e => e.hp > 0);
-    if (aliveEnemies.length < s.enemies.length) {
-        s.score += (s.enemies.length - aliveEnemies.length) * 100;
-        if (aliveEnemies.length < 4) spawnEnemies(3);
+            const distToSpawn = dist(enemy.pos, SPAWN_ZONE_CENTER);
+            
+            if (distToSpawn < SPAWN_ZONE_RADIUS + 50) {
+                const angleAway = Math.atan2(enemy.pos.y - SPAWN_ZONE_CENTER.y, enemy.pos.x - SPAWN_ZONE_CENTER.x);
+                enemy.pos.x += Math.cos(angleAway) * 2;
+                enemy.pos.y += Math.sin(angleAway) * 2;
+                enemy.rotation = angleAway;
+                enemy.walkCycle += 0.2;
+            } else if (closestDist < 700) {
+                const edx = target.x - enemy.pos.x;
+                const edy = target.y - enemy.pos.y;
+                const angle = Math.atan2(edy, edx);
+                enemy.rotation = angle;
+                enemy.pos.x += Math.cos(angle) * 4;
+                enemy.pos.y += Math.sin(angle) * 4;
+                enemy.walkCycle += 0.25;
+
+                if (distToPlayer < 45 && enemy.attackCooldown <= 0) {
+                   s.player.hp -= 15;
+                   enemy.attackCooldown = 60;
+                   enemy.isAttacking = true;
+                   setTimeout(() => { enemy.isAttacking = false; }, 300);
+                }
+            }
+            if (enemy.attackCooldown > 0) enemy.attackCooldown--;
+        });
+
+        const aliveEnemies = s.enemies.filter(e => e.hp > 0);
+        if (aliveEnemies.length < s.enemies.length) {
+            s.score += (s.enemies.length - aliveEnemies.length) * 100;
+            if (aliveEnemies.length < 4) spawnEnemies(3);
+        }
+        s.enemies = aliveEnemies;
     }
-    s.enemies = aliveEnemies;
 
     // Collisions
     const entities = [s.player, ...s.enemies];
@@ -319,7 +348,7 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
 
         s.trees.forEach(tree => {
             const d = dist(ent.pos, tree.pos);
-            const minD = ent.radius + tree.radius * 0.6; // Slightly forgiving tree collision
+            const minD = ent.radius + tree.radius * 0.6;
             if (d < minD) {
                 const angle = Math.atan2(ent.pos.y - tree.pos.y, ent.pos.x - tree.pos.x);
                 const push = minD - d;
@@ -339,23 +368,20 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
     const ctx = cvs.getContext('2d');
     if (!ctx) return;
 
-    // -- Background --
     ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, cvs.width, cvs.height);
 
     ctx.save();
     ctx.translate(cvs.width / 2 - s.camera.x, cvs.height / 2 - s.camera.y);
 
-    // -- Spawn Zone Rendering --
     ctx.save();
     ctx.beginPath();
     ctx.arc(SPAWN_ZONE_CENTER.x, SPAWN_ZONE_CENTER.y, SPAWN_ZONE_RADIUS, 0, Math.PI * 2);
-    ctx.fillStyle = '#1e293b'; // Lighter ground for safe zone
+    ctx.fillStyle = '#1e293b';
     ctx.fill();
     ctx.lineWidth = 4;
     ctx.strokeStyle = '#334155';
     ctx.stroke();
-    // Grid in Spawn Zone
     ctx.clip();
     ctx.strokeStyle = '#334155';
     ctx.globalAlpha = 0.3;
@@ -364,7 +390,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
     }
     ctx.restore();
 
-    // -- Ground Details (General) --
     ctx.strokeStyle = '#1e293b';
     ctx.lineWidth = 2;
     const gridSize = 100;
@@ -378,8 +403,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
         ctx.beginPath(); ctx.moveTo(startX, y); ctx.lineTo(startX + cvs.width + gridSize, y); ctx.stroke();
     }
 
-    // -- Render Order: Dead -> Trees(Back) -> Enemies -> Player -> Trees(Front) --
-    // Simplified Z-sort by Y position for slight depth effect
     const renderList = [
         ...s.trees,
         ...s.enemies,
@@ -396,19 +419,16 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
   };
 
   const drawTree = (ctx: CanvasRenderingContext2D, t: Entity) => {
-    // Shadow
     ctx.fillStyle = 'rgba(0,0,0,0.4)';
     ctx.beginPath();
     ctx.arc(t.pos.x + 8, t.pos.y + 8, t.radius, 0, Math.PI * 2);
     ctx.fill();
     
-    // Trunk Base
     ctx.fillStyle = '#1a2e05';
     ctx.beginPath();
     ctx.arc(t.pos.x, t.pos.y, t.radius * 0.3, 0, Math.PI * 2);
     ctx.fill();
 
-    // Leaves layers
     ctx.fillStyle = '#14532d';
     ctx.beginPath();
     ctx.arc(t.pos.x, t.pos.y, t.radius, 0, Math.PI * 2);
@@ -429,18 +449,15 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
     ctx.translate(e.pos.x, e.pos.y);
     ctx.rotate(e.rotation);
 
-    // --- Attack Visuals (Claw Swipe) ---
     if (e.isAttacking) {
         ctx.save();
         ctx.beginPath();
-        // Create a swipe arc in front
         ctx.arc(0, 0, 70, -0.6, 0.6); 
         ctx.strokeStyle = isEnemy ? 'rgba(255, 0, 0, 0.5)' : 'rgba(255, 255, 255, 0.6)';
         ctx.lineWidth = 40;
         ctx.lineCap = 'round';
         ctx.stroke();
         
-        // Sharper inner line
         ctx.beginPath();
         ctx.arc(0, 0, 75, -0.6, 0.6);
         ctx.strokeStyle = isEnemy ? '#ef4444' : '#fff';
@@ -449,33 +466,25 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
         ctx.restore();
     }
 
-    // --- Legs Animation ---
     const legOffset = 18;
     const legWidth = 10;
     const legLength = 16;
-    
-    // Walk cycle calculation
-    // Front Left & Back Right move together
     const legMove1 = Math.sin(e.walkCycle) * 8;
-    // Front Right & Back Left move together (opposite phase)
     const legMove2 = Math.sin(e.walkCycle + Math.PI) * 8;
 
-    ctx.fillStyle = isEnemy ? '#000' : (isFriend ? '#9a3412' : '#475569'); // Darker leg color
+    ctx.fillStyle = isEnemy ? '#000' : (isFriend ? '#9a3412' : '#475569');
 
-    // Function to draw a single leg
     const drawLeg = (x: number, y: number, offset: number) => {
         ctx.beginPath();
         ctx.ellipse(x + offset, y, legLength, legWidth, 0, 0, Math.PI * 2);
         ctx.fill();
     };
 
-    // Draw Legs (Under body)
-    drawLeg(15, -legOffset, legMove1); // Front Left
-    drawLeg(15, legOffset, legMove2);  // Front Right
-    drawLeg(-20, -legOffset, legMove2); // Back Left
-    drawLeg(-20, legOffset, legMove1);  // Back Right
+    drawLeg(15, -legOffset, legMove1);
+    drawLeg(15, legOffset, legMove2);
+    drawLeg(-20, -legOffset, legMove2);
+    drawLeg(-20, legOffset, legMove1);
 
-    // --- Tail ---
     const tailWag = Math.sin(e.walkCycle * 2) * 0.2;
     ctx.save();
     ctx.translate(-35, 0);
@@ -484,7 +493,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
     ctx.beginPath();
     ctx.ellipse(-10, 0, 25, 8, 0, 0, Math.PI * 2);
     ctx.fill();
-    // Tail Tip (White for Fox)
     if (isFriend) {
         ctx.fillStyle = '#fff';
         ctx.beginPath();
@@ -493,72 +501,50 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
     }
     ctx.restore();
 
-    // --- Main Body ---
     ctx.fillStyle = e.color;
     ctx.beginPath();
-    ctx.ellipse(0, 0, 35, 16, 0, 0, Math.PI * 2); // Elongated body
+    ctx.ellipse(0, 0, 35, 16, 0, 0, Math.PI * 2);
     ctx.fill();
     
-    // Back pattern (Darker strip)
     ctx.fillStyle = 'rgba(0,0,0,0.1)';
     ctx.beginPath();
     ctx.ellipse(-5, 0, 25, 10, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // --- Head ---
-    ctx.translate(25, 0); // Move to head position
+    ctx.translate(25, 0); 
     ctx.fillStyle = e.color;
-    
-    // Head shape
     ctx.beginPath();
     ctx.ellipse(0, 0, 18, 14, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Snout
-    ctx.fillStyle = isEnemy ? '#171717' : (isFriend ? '#fff' : '#94a3b8'); // Lighter snout for friend/player
+    ctx.fillStyle = isEnemy ? '#171717' : (isFriend ? '#fff' : '#94a3b8');
     ctx.beginPath();
     ctx.ellipse(12, 0, 10, 6, 0, 0, Math.PI * 2);
     ctx.fill();
     
-    // Nose
     ctx.fillStyle = '#000';
     ctx.beginPath();
     ctx.arc(20, 0, 3, 0, Math.PI * 2);
     ctx.fill();
 
-    // Ears
     ctx.fillStyle = e.color;
-    // Left Ear
     ctx.beginPath();
-    ctx.moveTo(-5, -8);
-    ctx.lineTo(5, -20);
-    ctx.lineTo(8, -5);
-    ctx.fill();
-    // Right Ear
+    ctx.moveTo(-5, -8); ctx.lineTo(5, -20); ctx.lineTo(8, -5); ctx.fill();
     ctx.beginPath();
-    ctx.moveTo(-5, 8);
-    ctx.lineTo(5, 20);
-    ctx.lineTo(8, 5);
-    ctx.fill();
+    ctx.moveTo(-5, 8); ctx.lineTo(5, 20); ctx.lineTo(8, 5); ctx.fill();
 
-    // Eyes
-    ctx.fillStyle = isEnemy ? '#ef4444' : '#000'; // Red eyes for enemy
+    ctx.fillStyle = isEnemy ? '#ef4444' : '#000';
     ctx.beginPath();
-    ctx.arc(5, -5, 2, 0, Math.PI * 2); // Left
-    ctx.arc(5, 5, 2, 0, Math.PI * 2);  // Right
+    ctx.arc(5, -5, 2, 0, Math.PI * 2);
+    ctx.arc(5, 5, 2, 0, Math.PI * 2);
     ctx.fill();
     
-    // Glow for enemy eyes
     if (isEnemy) {
-        ctx.shadowColor = '#ef4444';
-        ctx.shadowBlur = 10;
-        ctx.fill();
-        ctx.shadowBlur = 0;
+        ctx.shadowColor = '#ef4444'; ctx.shadowBlur = 10; ctx.fill(); ctx.shadowBlur = 0;
     }
 
     ctx.restore();
 
-    // --- Health Bar ---
     if (e.hp < e.maxHp) {
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
         ctx.fillRect(e.pos.x - 25, e.pos.y - 50, 50, 6);
@@ -567,9 +553,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
     }
   };
 
-  // -------------------------
-  // Mobile Controls Overlay
-  // -------------------------
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
   const joyBaseRef = useRef<HTMLDivElement>(null);
 
@@ -588,7 +571,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
      let dx = touch.clientX - centerX;
      let dy = touch.clientY - centerY;
      
-     // Clamp
      const maxDist = 40;
      const dist = Math.sqrt(dx*dx + dy*dy);
      if (dist > maxDist) {
@@ -617,7 +599,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
             className="block cursor-crosshair"
         />
         
-        {/* HUD */}
         <div className="absolute top-4 left-4 flex flex-col gap-2 pointer-events-none">
             <div className="flex items-center gap-2">
                 <div className="bg-neutral-900 border border-neutral-700 p-1 w-64 h-8 rounded relative overflow-hidden">
@@ -633,9 +614,14 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
             <div className="text-white font-mono text-xl font-bold drop-shadow-md bg-black/30 px-2 rounded inline-block">
                 SCORE: {hudState.score}
             </div>
+            {isMultiplayer && (
+               <div className="flex items-center gap-2 bg-black/30 px-2 rounded w-fit">
+                  <Radio className="w-4 h-4 text-green-500 animate-pulse" />
+                  <span className="text-xs text-green-500 font-mono">LIVE</span>
+               </div>
+            )}
         </div>
 
-        {/* Mobile Controls */}
         <div className="absolute bottom-10 left-10 w-32 h-32 rounded-full border-2 border-white/20 bg-black/20 backdrop-blur-sm touch-none flex items-center justify-center z-50"
              ref={joyBaseRef}
              onTouchStart={handleJoyTouchStart}
@@ -660,7 +646,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
              <span className="absolute -top-8 right-8 text-white/50 text-xs font-bold tracking-widest pointer-events-none">ATTACK</span>
         </div>
 
-        {/* Exit Button */}
         <button 
             onClick={onExit}
             className="absolute top-4 right-4 bg-neutral-900/50 hover:bg-red-900/80 text-white p-2 rounded backdrop-blur border border-neutral-700 hover:border-red-500 transition z-50"
@@ -668,7 +653,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, onExit })
             <Menu className="w-6 h-6" />
         </button>
 
-        {/* Game Over Screen */}
         {hudState.gameOver && (
             <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50">
                 <div className="bg-neutral-900 border border-red-900 p-8 rounded-xl text-center max-w-sm w-full shadow-2xl shadow-red-900/20 transform scale-110">

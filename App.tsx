@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ScreenState, PlayerProfile } from './types.ts';
 import { AuthScreen } from './components/Screens.tsx';
 import { LobbyScreen } from './components/Lobby.tsx';
@@ -7,38 +7,73 @@ import { GameEngine } from './components/GameEngine.tsx';
 export default function App() {
   const [screen, setScreen] = useState<ScreenState>('AUTH');
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
-  const [lobbyId, setLobbyId] = useState<string | null>(null);
+  const [peerId, setPeerId] = useState<string | null>(null);
   const [isMultiplayer, setIsMultiplayer] = useState<boolean>(false);
+  const [conn, setConn] = useState<any>(null); // PeerJS connection
+
+  // PeerJS Instance
+  const peerRef = useRef<any>(null);
 
   useEffect(() => {
-    try {
-      const savedId = localStorage.getItem('fh_player_id');
-      if (savedId) {
-        setProfile({ id: savedId, name: `Wolf-${savedId.substring(0, 4)}`, isHost: false });
-      } else {
-        const newId = Math.random().toString(36).substring(2, 8).toUpperCase();
-        localStorage.setItem('fh_player_id', newId);
-        setProfile({ id: newId, name: `Wolf-${newId.substring(0, 4)}`, isHost: false });
-      }
-    } catch (e) {
-      // Fallback for private browsing or errors
-      const newId = Math.random().toString(36).substring(2, 8).toUpperCase();
-      setProfile({ id: newId, name: `Wolf-${newId.substring(0, 4)}`, isHost: false });
+    // 1. Create Profile
+    let id = localStorage.getItem('fh_player_id');
+    if (!id) {
+       id = Math.random().toString(36).substring(2, 6).toUpperCase();
+       localStorage.setItem('fh_player_id', id);
     }
+    setProfile({ id: id!, name: `Wolf-${id}`, isHost: false });
+
+    // 2. Initialize PeerJS
+    const initPeer = async () => {
+        // @ts-ignore
+        if (!window.Peer) return; // Wait for script load
+        // @ts-ignore
+        const peer = new window.Peer(id, { debug: 1 }); // Use our ID as Peer ID
+        peer.on('open', (id: string) => {
+            console.log('My peer ID is: ' + id);
+            setPeerId(id);
+        });
+        peer.on('connection', (c: any) => {
+            console.log('Incoming connection from friend');
+            setConn(c);
+            setIsMultiplayer(true);
+            setProfile(p => p ? ({ ...p, isHost: true }) : null); // Sending/Host side
+            // Auto switch to Lobby to show connection status, host must wait there
+            // Note: If already in game, handle appropriately, but usually we start in Auth/Lobby
+        });
+        peerRef.current = peer;
+    };
+
+    const interval = setInterval(() => {
+       // @ts-ignore
+       if(window.Peer && !peerRef.current) {
+          initPeer();
+          clearInterval(interval);
+       }
+    }, 500);
+
+    return () => {
+       if(peerRef.current) peerRef.current.destroy();
+    };
   }, []);
 
   const handleCreateLobby = () => {
     if (!profile) return;
-    const newLobbyId = Math.random().toString(36).substring(2, 6).toUpperCase();
-    setLobbyId(newLobbyId);
     setProfile({ ...profile, isHost: true });
     setIsMultiplayer(true);
     setScreen('LOBBY');
   };
 
-  const handleJoinLobby = (id: string) => {
-    if (!profile) return;
-    setLobbyId(id);
+  const handleJoinLobby = (hostId: string) => {
+    if (!profile || !peerRef.current) return;
+    const connection = peerRef.current.connect(hostId);
+    
+    connection.on('open', () => {
+      console.log("Connected to host!");
+      setConn(connection);
+    });
+    
+    setConn(connection);
     setProfile({ ...profile, isHost: false });
     setIsMultiplayer(true);
     setScreen('LOBBY');
@@ -55,7 +90,10 @@ export default function App() {
 
   const handleBack = () => {
     setScreen('AUTH');
-    setLobbyId(null);
+    if (conn) {
+       conn.close();
+       setConn(null);
+    }
   };
 
   return (
@@ -65,17 +103,20 @@ export default function App() {
 
       {screen === 'AUTH' && profile && (
         <AuthScreen 
-          profile={profile} 
+          profile={profile}
+          peerId={peerId}
           onCreate={handleCreateLobby} 
           onJoin={handleJoinLobby} 
           onOffline={handlePlayOffline} 
         />
       )}
 
-      {screen === 'LOBBY' && profile && lobbyId && (
+      {screen === 'LOBBY' && profile && peerId && (
         <LobbyScreen 
-          lobbyId={lobbyId} 
-          currentUser={profile} 
+          currentUser={profile}
+          peerId={peerId}
+          conn={conn}
+          isHost={profile.isHost}
           onStart={handleStartGame} 
           onBack={handleBack}
         />
@@ -83,8 +124,10 @@ export default function App() {
 
       {screen === 'GAME' && profile && (
         <GameEngine 
-          isMultiplayer={isMultiplayer} 
-          onExit={() => setScreen('AUTH')} 
+          isMultiplayer={isMultiplayer}
+          isHost={profile.isHost}
+          conn={conn}
+          onExit={handleBack} 
         />
       )}
     </div>
