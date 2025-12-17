@@ -17,20 +17,24 @@ export interface Entity {
   velocity: Vec2;
   rotation: number; // in radians
   radius: number;
-  type: 'PLAYER' | 'FRIEND' | 'ENEMY' | 'TREE';
+  type: 'PLAYER' | 'FRIEND' | 'SNAKE' | 'TREE' | 'ROCK' | 'STREAM';
   hp: number;
   maxHp: number;
   isAttacking: boolean;
   attackCooldown: number;
   walkCycle: number; // For animation 0-2PI
   color: string;
+  // Leveling stats
+  level?: number;
+  xp?: number;
+  maxXp?: number;
 }
 
 export interface GameState {
   player: Entity;
   friend?: Entity; // The second player
-  enemies: Entity[];
-  trees: Entity[];
+  enemies: Entity[]; // Snakes
+  environment: Entity[]; // Trees, Rocks, Streams
   score: number;
   gameOver: boolean;
   camera: Vec2;

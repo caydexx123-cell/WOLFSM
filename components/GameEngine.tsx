@@ -1,8 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Entity, GameState, Vec2 } from '../types.ts';
-import { Sword, Skull, Menu, Radio } from 'lucide-react';
+import { Sword, Skull, Menu, Radio, Zap } from 'lucide-react';
 
-const FPS = 60;
 const CANVAS_WIDTH = 2500;
 const CANVAS_HEIGHT = 2500;
 
@@ -28,7 +27,7 @@ const seededRandom = (seed: number) => {
 export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, conn, onExit }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>();
-  const [hudState, setHudState] = useState({ hp: 100, score: 0, gameOver: false });
+  const [hudState, setHudState] = useState({ hp: 100, level: 1, xp: 0, maxXp: 100, gameOver: false });
   
   const keys = useRef<{ [key: string]: boolean }>({});
   const mouse = useRef<Vec2>({ x: 0, y: 0 });
@@ -47,18 +46,21 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
       isAttacking: false,
       attackCooldown: 0,
       walkCycle: 0,
-      color: '#64748b'
+      color: '#cbd5e1', // Realistic Grey Wolf
+      level: 1,
+      xp: 0,
+      maxXp: 100 // 10 snakes * 10 xp
     },
     friend: undefined,
     enemies: [],
-    trees: [],
+    environment: [],
     score: 0,
     gameOver: false,
     camera: { x: SPAWN_ZONE_CENTER.x, y: SPAWN_ZONE_CENTER.y }
   });
 
   useEffect(() => {
-    // 1. Setup Friend if Multiplayer (REAL connection)
+    // 1. Setup Friend
     if (isMultiplayer && conn) {
       state.current.friend = {
         id: 'p2',
@@ -72,10 +74,10 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
         isAttacking: false,
         attackCooldown: 0,
         walkCycle: 0,
-        color: '#d97706' // Orange for friend
+        color: '#cbd5e1', // Identical model color
+        level: 1
       };
 
-      // Handle Data
       conn.on('data', (data: any) => {
         if (data.type === 'PLAYER_UPDATE' && state.current.friend) {
            const f = state.current.friend;
@@ -84,50 +86,21 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
            f.walkCycle = data.data.walkCycle;
            f.isAttacking = data.data.isAttacking;
            f.hp = data.data.hp;
+           f.level = data.data.level; // Sync level for visuals
         }
         if (data.type === 'WORLD_UPDATE' && !isHost) {
-           // Client receives world state
            state.current.enemies = data.enemies;
-           state.current.score = data.score;
         }
       });
     }
 
-    // 2. Generate World (Deterministic if seed present)
+    // 2. Generate World
     const seed = (window as any).GAME_SEED || Math.random() * 10000;
-    let currentSeed = seed;
+    initWorld(seed);
 
-    const newTrees: Entity[] = [];
-    for (let i = 0; i < 200; i++) {
-      currentSeed += 1;
-      const r1 = seededRandom(currentSeed);
-      currentSeed += 1;
-      const r2 = seededRandom(currentSeed);
-      
-      const pos = { x: r1 * CANVAS_WIDTH, y: r2 * CANVAS_HEIGHT };
-      
-      if (dist(pos, SPAWN_ZONE_CENTER) > SPAWN_ZONE_RADIUS + 50) {
-        newTrees.push({
-          id: `tree-${i}`,
-          pos,
-          velocity: { x: 0, y: 0 },
-          rotation: seededRandom(currentSeed) * Math.PI * 2,
-          radius: 40 + seededRandom(currentSeed+1) * 50,
-          type: 'TREE',
-          hp: 100,
-          maxHp: 100,
-          isAttacking: false,
-          attackCooldown: 0,
-          walkCycle: 0,
-          color: '#14532d'
-        });
-      }
-    }
-    state.current.trees = newTrees;
-
-    // Only Host spawns enemies initially
+    // Only Host spawns enemies
     if (!isMultiplayer || isHost) {
-        spawnEnemies(5);
+        spawnSnakes(5);
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -153,25 +126,74 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
     };
   }, [isMultiplayer, isHost, conn]);
 
-  const spawnEnemies = (count: number) => {
+  const initWorld = (seed: number) => {
+    const env: Entity[] = [];
+    let currentSeed = seed;
+
+    // Generate Stream (Healing River)
+    // Create a winding path across the map
+    for (let i = 0; i < 30; i++) {
+        const x = (i / 30) * CANVAS_WIDTH;
+        const y = (CANVAS_HEIGHT / 2) + Math.sin(i * 0.5 + currentSeed) * 400;
+        env.push({
+            id: `stream-${i}`,
+            pos: {x, y},
+            velocity: {x:0, y:0}, rotation: 0, radius: 60,
+            type: 'STREAM', hp: 0, maxHp: 0, isAttacking: false, attackCooldown: 0, walkCycle: 0, color: '#3b82f6'
+        });
+    }
+
+    // Trees and Rocks
+    for (let i = 0; i < 250; i++) {
+      currentSeed += 1;
+      const r1 = seededRandom(currentSeed);
+      currentSeed += 1;
+      const r2 = seededRandom(currentSeed);
+      
+      const pos = { x: r1 * CANVAS_WIDTH, y: r2 * CANVAS_HEIGHT };
+      
+      if (dist(pos, SPAWN_ZONE_CENTER) > SPAWN_ZONE_RADIUS + 50) {
+        // 80% Trees, 20% Rocks
+        const isRock = seededRandom(currentSeed + 10) > 0.8;
+        
+        env.push({
+          id: `env-${i}`,
+          pos,
+          velocity: { x: 0, y: 0 },
+          rotation: seededRandom(currentSeed + 5) * Math.PI * 2,
+          radius: isRock ? 25 + seededRandom(currentSeed)*20 : 40 + seededRandom(currentSeed+1) * 50,
+          type: isRock ? 'ROCK' : 'TREE',
+          hp: 100,
+          maxHp: 100,
+          isAttacking: false,
+          attackCooldown: 0,
+          walkCycle: 0,
+          color: isRock ? '#57534e' : '#14532d'
+        });
+      }
+    }
+    state.current.environment = env;
+  };
+
+  const spawnSnakes = (count: number) => {
     for (let i = 0; i < count; i++) {
       let pos = { x: Math.random() * CANVAS_WIDTH, y: Math.random() * CANVAS_HEIGHT };
       while(dist(pos, state.current.player.pos) < 600 || dist(pos, SPAWN_ZONE_CENTER) < SPAWN_ZONE_RADIUS) {
         pos = { x: Math.random() * CANVAS_WIDTH, y: Math.random() * CANVAS_HEIGHT };
       }
       state.current.enemies.push({
-        id: `enemy-${Date.now()}-${i}`,
+        id: `snake-${Date.now()}-${i}`,
         pos,
         velocity: { x: 0, y: 0 },
         rotation: 0,
-        radius: 24,
-        type: 'ENEMY',
-        hp: 60,
+        radius: 20,
+        type: 'SNAKE',
+        hp: 60, // 5 hits at lvl 1 (12 dmg)
         maxHp: 60,
         isAttacking: false,
         attackCooldown: 0,
         walkCycle: 0,
-        color: '#171717'
+        color: '#4d7c0f'
       });
     }
   };
@@ -183,10 +205,12 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
       p.isAttacking = true;
       p.attackCooldown = 25;
       
-      const attackRange = 140;
-      const attackAngle = 1.2;
+      const attackRange = 150;
+      const attackAngle = 1.5;
       
-      // Local simulation for immediate feedback
+      // Calculate Damage: Lvl 1 = 12 (5 hits to kill 60hp), Lvl 2 = 60 (1 hit)
+      const damage = (p.level || 1) >= 2 ? 60 : 12;
+
       state.current.enemies.forEach(enemy => {
         const dx = enemy.pos.x - p.pos.x;
         const dy = enemy.pos.y - p.pos.y;
@@ -199,12 +223,31 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
           while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
           
           if (Math.abs(angleDiff) < attackAngle) {
-            enemy.hp -= 35;
-            enemy.pos.x += Math.cos(angleToEnemy) * 30;
-            enemy.pos.y += Math.sin(angleToEnemy) * 30;
+            enemy.hp -= damage;
+            enemy.pos.x += Math.cos(angleToEnemy) * 40;
+            enemy.pos.y += Math.sin(angleToEnemy) * 40;
+            
+            // Check kill locally for immediate XP feedback (Host ultimately decides world state though)
+            if (enemy.hp <= 0 && enemy.hp + damage > 0) {
+                // Enemy just died
+                gainXp(10);
+            }
           }
         }
       });
+    }
+  };
+
+  const gainXp = (amount: number) => {
+    const p = state.current.player;
+    if ((p.level || 1) >= 2) return; // Cap at level 2
+
+    p.xp = (p.xp || 0) + amount;
+    if (p.xp >= (p.maxXp || 100)) {
+        p.level = 2;
+        p.xp = p.maxXp; // Cap visual
+        // Heal on level up
+        p.hp = p.maxHp;
     }
   };
 
@@ -217,7 +260,7 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
 
     updatePhysics(s);
     
-    // --- NETWORK SEND ---
+    // Send Updates
     if (isMultiplayer && conn && conn.open) {
        conn.send({
          type: 'PLAYER_UPDATE',
@@ -226,15 +269,15 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
            rotation: s.player.rotation,
            walkCycle: s.player.walkCycle,
            isAttacking: s.player.isAttacking,
-           hp: s.player.hp
+           hp: s.player.hp,
+           level: s.player.level
          }
        });
 
        if (isHost) {
          conn.send({
            type: 'WORLD_UPDATE',
-           enemies: s.enemies,
-           score: s.score
+           enemies: s.enemies
          });
        }
     }
@@ -242,7 +285,13 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
     render(s);
 
     if (Math.random() > 0.9) {
-      setHudState({ hp: s.player.hp, score: s.score, gameOver: s.gameOver });
+      setHudState({ 
+          hp: s.player.hp, 
+          level: s.player.level || 1, 
+          xp: s.player.xp || 0, 
+          maxXp: s.player.maxXp || 100, 
+          gameOver: s.gameOver 
+      });
     }
 
     requestRef.current = requestAnimationFrame(gameLoop);
@@ -268,93 +317,98 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
       s.player.pos.x += (dx / len) * speed;
       s.player.pos.y += (dy / len) * speed;
       s.player.walkCycle += 0.3;
-      if (joystickRef.current.active) {
-        s.player.rotation = Math.atan2(dy, dx);
-      }
+      // Rotation follows movement
+      s.player.rotation = Math.atan2(dy, dx);
     } else {
         s.player.walkCycle = 0;
     }
 
-    if (!joystickRef.current.active && canvasRef.current) {
-        const rect = canvasRef.current.getBoundingClientRect();
-        const worldMouseX = s.camera.x + (mouse.current.x - rect.left - rect.width/2);
-        const worldMouseY = s.camera.y + (mouse.current.y - rect.top - rect.height/2);
-        s.player.rotation = Math.atan2(worldMouseY - s.player.pos.y, worldMouseX - s.player.pos.x);
-    }
-
+    // Cooldowns
     if (s.player.attackCooldown > 0) {
         s.player.attackCooldown--;
         if (s.player.attackCooldown <= 0) s.player.isAttacking = false;
     }
 
-    // Host Logic for Enemies
+    // Healing from Streams
+    let nearStream = false;
+    s.environment.filter(e => e.type === 'STREAM').forEach(stream => {
+        if (dist(s.player.pos, stream.pos) < stream.radius) {
+            nearStream = true;
+        }
+    });
+    
+    // Heal 1 HP tick if near stream
+    if (nearStream && s.player.hp < s.player.maxHp && Math.random() > 0.9) {
+        s.player.hp = Math.min(s.player.maxHp, s.player.hp + 1);
+    }
+
+    // Enemy Logic (Host only)
     if (!isMultiplayer || isHost) {
-        s.enemies.forEach(enemy => {
-            const distToPlayer = dist(enemy.pos, s.player.pos);
+        s.enemies.forEach(snake => {
+            const distToPlayer = dist(snake.pos, s.player.pos);
             let target = s.player.pos;
             let closestDist = distToPlayer;
 
-            // Target Friend if closer
             if (s.friend) {
-                const distToFriend = dist(enemy.pos, s.friend.pos);
+                const distToFriend = dist(snake.pos, s.friend.pos);
                 if (distToFriend < closestDist) {
                     target = s.friend.pos;
                     closestDist = distToFriend;
                 }
             }
 
-            const distToSpawn = dist(enemy.pos, SPAWN_ZONE_CENTER);
-            
-            if (distToSpawn < SPAWN_ZONE_RADIUS + 50) {
-                const angleAway = Math.atan2(enemy.pos.y - SPAWN_ZONE_CENTER.y, enemy.pos.x - SPAWN_ZONE_CENTER.x);
-                enemy.pos.x += Math.cos(angleAway) * 2;
-                enemy.pos.y += Math.sin(angleAway) * 2;
-                enemy.rotation = angleAway;
-                enemy.walkCycle += 0.2;
-            } else if (closestDist < 700) {
-                const edx = target.x - enemy.pos.x;
-                const edy = target.y - enemy.pos.y;
+            // Slither movement
+            if (closestDist < 800) {
+                const edx = target.x - snake.pos.x;
+                const edy = target.y - snake.pos.y;
                 const angle = Math.atan2(edy, edx);
-                enemy.rotation = angle;
-                enemy.pos.x += Math.cos(angle) * 4;
-                enemy.pos.y += Math.sin(angle) * 4;
-                enemy.walkCycle += 0.25;
+                snake.rotation = angle;
+                
+                // Slower than wolves
+                snake.pos.x += Math.cos(angle) * 3.5;
+                snake.pos.y += Math.sin(angle) * 3.5;
+                snake.walkCycle += 0.4; // Fast slither animation
 
-                if (distToPlayer < 45 && enemy.attackCooldown <= 0) {
-                   s.player.hp -= 15;
-                   enemy.attackCooldown = 60;
-                   enemy.isAttacking = true;
-                   setTimeout(() => { enemy.isAttacking = false; }, 300);
+                // Snake Bite
+                if (closestDist < 35 && snake.attackCooldown <= 0) {
+                   // Deal 10 damage
+                   if (target === s.player.pos) s.player.hp -= 10;
+                   // Note: Friend damage needs to be synced or handled by friend client, 
+                   // but for simplicity host assumes hit. Friend hp will sync back from friend's client eventually.
+                   
+                   snake.attackCooldown = 60;
+                   snake.isAttacking = true;
+                   setTimeout(() => { snake.isAttacking = false; }, 300);
                 }
             }
-            if (enemy.attackCooldown > 0) enemy.attackCooldown--;
+            if (snake.attackCooldown > 0) snake.attackCooldown--;
         });
 
+        // Cleanup Dead Snakes
         const aliveEnemies = s.enemies.filter(e => e.hp > 0);
         if (aliveEnemies.length < s.enemies.length) {
-            s.score += (s.enemies.length - aliveEnemies.length) * 100;
-            if (aliveEnemies.length < 4) spawnEnemies(3);
+            if (aliveEnemies.length < 5) spawnSnakes(3);
         }
         s.enemies = aliveEnemies;
     }
 
-    // Collisions
-    const entities = [s.player, ...s.enemies];
-    if (s.friend) entities.push(s.friend);
+    // World Bounds & Environment Collision
+    const dynamicEntities = [s.player, ...s.enemies];
+    if (s.friend) dynamicEntities.push(s.friend);
 
-    entities.forEach(ent => {
+    dynamicEntities.forEach(ent => {
         ent.pos.x = Math.max(0, Math.min(CANVAS_WIDTH, ent.pos.x));
         ent.pos.y = Math.max(0, Math.min(CANVAS_HEIGHT, ent.pos.y));
 
-        s.trees.forEach(tree => {
-            const d = dist(ent.pos, tree.pos);
-            const minD = ent.radius + tree.radius * 0.6;
-            if (d < minD) {
-                const angle = Math.atan2(ent.pos.y - tree.pos.y, ent.pos.x - tree.pos.x);
-                const push = minD - d;
-                ent.pos.x += Math.cos(angle) * push;
-                ent.pos.y += Math.sin(angle) * push;
-            }
+        s.environment.filter(e => e.type === 'ROCK').forEach(rock => {
+             const d = dist(ent.pos, rock.pos);
+             const minD = ent.radius + rock.radius;
+             if (d < minD) {
+                 const angle = Math.atan2(ent.pos.y - rock.pos.y, ent.pos.x - rock.pos.x);
+                 const push = minD - d;
+                 ent.pos.x += Math.cos(angle) * push;
+                 ent.pos.y += Math.sin(angle) * push;
+             }
         });
     });
 
@@ -368,43 +422,27 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
     const ctx = cvs.getContext('2d');
     if (!ctx) return;
 
-    ctx.fillStyle = '#0f172a';
+    ctx.fillStyle = '#1c1917'; // Darker ground for contrast
     ctx.fillRect(0, 0, cvs.width, cvs.height);
 
     ctx.save();
     ctx.translate(cvs.width / 2 - s.camera.x, cvs.height / 2 - s.camera.y);
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(SPAWN_ZONE_CENTER.x, SPAWN_ZONE_CENTER.y, SPAWN_ZONE_RADIUS, 0, Math.PI * 2);
-    ctx.fillStyle = '#1e293b';
-    ctx.fill();
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = '#334155';
-    ctx.stroke();
-    ctx.clip();
-    ctx.strokeStyle = '#334155';
-    ctx.globalAlpha = 0.3;
-    for (let i = SPAWN_ZONE_CENTER.x - SPAWN_ZONE_RADIUS; i < SPAWN_ZONE_CENTER.x + SPAWN_ZONE_RADIUS; i+=50) {
-        ctx.beginPath(); ctx.moveTo(i, SPAWN_ZONE_CENTER.y - SPAWN_ZONE_RADIUS); ctx.lineTo(i, SPAWN_ZONE_CENTER.y + SPAWN_ZONE_RADIUS); ctx.stroke();
-    }
-    ctx.restore();
-
-    ctx.strokeStyle = '#1e293b';
-    ctx.lineWidth = 2;
-    const gridSize = 100;
-    const startX = Math.floor((s.camera.x - cvs.width/2) / gridSize) * gridSize;
-    const startY = Math.floor((s.camera.y - cvs.height/2) / gridSize) * gridSize;
-    
-    for (let x = startX; x < startX + cvs.width + gridSize; x += gridSize) {
-        ctx.beginPath(); ctx.moveTo(x, startY); ctx.lineTo(x, startY + cvs.height + gridSize); ctx.stroke();
-    }
-    for (let y = startY; y < startY + cvs.height + gridSize; y += gridSize) {
-        ctx.beginPath(); ctx.moveTo(startX, y); ctx.lineTo(startX + cvs.width + gridSize, y); ctx.stroke();
-    }
+    // Draw Stream Layer First
+    s.environment.filter(e => e.type === 'STREAM').forEach(stream => {
+        ctx.beginPath();
+        ctx.arc(stream.pos.x, stream.pos.y, stream.radius, 0, Math.PI * 2);
+        ctx.fillStyle = '#0ea5e9'; // Sky blue water
+        ctx.fill();
+        // Inner flow
+        ctx.beginPath();
+        ctx.arc(stream.pos.x, stream.pos.y, stream.radius * 0.8, 0, Math.PI * 2);
+        ctx.fillStyle = '#38bdf8';
+        ctx.fill();
+    });
 
     const renderList = [
-        ...s.trees,
+        ...s.environment.filter(e => e.type !== 'STREAM'),
         ...s.enemies,
         s.player,
         ...(s.friend ? [s.friend] : [])
@@ -412,145 +450,238 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
 
     renderList.forEach(ent => {
         if (ent.type === 'TREE') drawTree(ctx, ent);
-        else drawRealisticEntity(ctx, ent);
+        else if (ent.type === 'ROCK') drawRock(ctx, ent);
+        else if (ent.type === 'SNAKE') drawSnake(ctx, ent);
+        else drawRealisticWolf(ctx, ent);
     });
 
     ctx.restore();
   };
 
+  const drawRock = (ctx: CanvasRenderingContext2D, r: Entity) => {
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.beginPath();
+      ctx.ellipse(r.pos.x + 10, r.pos.y + 10, r.radius, r.radius * 0.8, 0, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.fillStyle = '#57534e';
+      ctx.beginPath();
+      ctx.arc(r.pos.x, r.pos.y, r.radius, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Detail
+      ctx.fillStyle = '#78716c';
+      ctx.beginPath();
+      ctx.arc(r.pos.x - r.radius * 0.3, r.pos.y - r.radius * 0.3, r.radius * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+  };
+
   const drawTree = (ctx: CanvasRenderingContext2D, t: Entity) => {
     ctx.fillStyle = 'rgba(0,0,0,0.4)';
     ctx.beginPath();
-    ctx.arc(t.pos.x + 8, t.pos.y + 8, t.radius, 0, Math.PI * 2);
+    ctx.arc(t.pos.x + 15, t.pos.y + 15, t.radius, 0, Math.PI * 2);
     ctx.fill();
     
-    ctx.fillStyle = '#1a2e05';
-    ctx.beginPath();
-    ctx.arc(t.pos.x, t.pos.y, t.radius * 0.3, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = '#14532d';
+    ctx.fillStyle = '#14532d'; // Dark Green
     ctx.beginPath();
     ctx.arc(t.pos.x, t.pos.y, t.radius, 0, Math.PI * 2);
     ctx.fill();
     
-    ctx.fillStyle = '#166534';
+    ctx.fillStyle = '#166534'; // Light Green Highlight
     ctx.beginPath();
-    ctx.arc(t.pos.x - t.radius*0.2, t.pos.y - t.radius*0.2, t.radius * 0.7, 0, Math.PI * 2);
+    ctx.arc(t.pos.x - t.radius*0.2, t.pos.y - t.radius*0.2, t.radius * 0.6, 0, Math.PI * 2);
     ctx.fill();
   };
 
-  const drawRealisticEntity = (ctx: CanvasRenderingContext2D, e: Entity) => {
-    const isPlayer = e.type === 'PLAYER';
-    const isEnemy = e.type === 'ENEMY';
-    const isFriend = e.type === 'FRIEND';
+  const drawSnake = (ctx: CanvasRenderingContext2D, s: Entity) => {
+     ctx.save();
+     ctx.translate(s.pos.x, s.pos.y);
+     ctx.rotate(s.rotation);
+     
+     // Draw Snake Body (Sinusoidal)
+     const segments = 10;
+     const length = 40;
+     
+     // Shadow
+     ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+     ctx.lineWidth = 14;
+     ctx.lineCap = 'round';
+     ctx.beginPath();
+     for(let i=0; i<=segments; i++) {
+         const x = -i * (length/segments);
+         const y = Math.sin(s.walkCycle + i * 0.5) * 8;
+         if (i===0) ctx.moveTo(x, y + 10);
+         else ctx.lineTo(x, y + 10);
+     }
+     ctx.stroke();
 
+     // Body
+     ctx.strokeStyle = '#65a30d'; // Green
+     ctx.lineWidth = 12;
+     ctx.beginPath();
+     for(let i=0; i<=segments; i++) {
+         const x = -i * (length/segments);
+         const y = Math.sin(s.walkCycle + i * 0.5) * 8;
+         if (i===0) ctx.moveTo(x, y);
+         else ctx.lineTo(x, y);
+     }
+     ctx.stroke();
+
+     // Pattern
+     ctx.strokeStyle = '#365314'; // Dark Green stripes
+     ctx.lineWidth = 4;
+     ctx.setLineDash([5, 5]);
+     ctx.stroke();
+     ctx.setLineDash([]);
+
+     // Head
+     ctx.fillStyle = '#4d7c0f';
+     ctx.beginPath();
+     ctx.ellipse(5, Math.sin(s.walkCycle)*8, 12, 9, 0, 0, Math.PI*2);
+     ctx.fill();
+     
+     // Eyes
+     ctx.fillStyle = '#ef4444';
+     const headY = Math.sin(s.walkCycle)*8;
+     ctx.beginPath(); ctx.arc(8, headY - 4, 2, 0, Math.PI*2); ctx.fill();
+     ctx.beginPath(); ctx.arc(8, headY + 4, 2, 0, Math.PI*2); ctx.fill();
+
+     // Tongue
+     if (Math.sin(s.walkCycle * 2) > 0.5) {
+         ctx.strokeStyle = '#ef4444';
+         ctx.lineWidth = 2;
+         ctx.beginPath();
+         ctx.moveTo(15, headY);
+         ctx.lineTo(25, headY);
+         ctx.lineTo(30, headY - 3);
+         ctx.moveTo(25, headY);
+         ctx.lineTo(30, headY + 3);
+         ctx.stroke();
+     }
+
+     // Health Bar
+     if (s.hp < s.maxHp) {
+        ctx.rotate(-s.rotation);
+        ctx.fillStyle = 'red';
+        ctx.fillRect(-15, -30, 30 * (s.hp/s.maxHp), 4);
+     }
+
+     ctx.restore();
+  };
+
+  const drawRealisticWolf = (ctx: CanvasRenderingContext2D, e: Entity) => {
     ctx.save();
     ctx.translate(e.pos.x, e.pos.y);
     ctx.rotate(e.rotation);
 
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.beginPath();
+    ctx.ellipse(0, 5, 20, 10, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // Attack Slash
     if (e.isAttacking) {
         ctx.save();
         ctx.beginPath();
-        ctx.arc(0, 0, 70, -0.6, 0.6); 
-        ctx.strokeStyle = isEnemy ? 'rgba(255, 0, 0, 0.5)' : 'rgba(255, 255, 255, 0.6)';
-        ctx.lineWidth = 40;
-        ctx.lineCap = 'round';
-        ctx.stroke();
-        
-        ctx.beginPath();
-        ctx.arc(0, 0, 75, -0.6, 0.6);
-        ctx.strokeStyle = isEnemy ? '#ef4444' : '#fff';
-        ctx.lineWidth = 5;
+        ctx.arc(30, 0, 40, -0.5, 0.5);
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = '#fff';
         ctx.stroke();
         ctx.restore();
     }
 
-    const legOffset = 18;
-    const legWidth = 10;
-    const legLength = 16;
-    const legMove1 = Math.sin(e.walkCycle) * 8;
-    const legMove2 = Math.sin(e.walkCycle + Math.PI) * 8;
+    // Colors
+    const furColor = '#94a3b8'; // Blue-ish grey
+    const darkFur = '#475569'; 
+    const isLevel2 = (e.level || 1) >= 2;
 
-    ctx.fillStyle = isEnemy ? '#000' : (isFriend ? '#9a3412' : '#475569');
-
-    const drawLeg = (x: number, y: number, offset: number) => {
-        ctx.beginPath();
-        ctx.ellipse(x + offset, y, legLength, legWidth, 0, 0, Math.PI * 2);
-        ctx.fill();
-    };
-
-    drawLeg(15, -legOffset, legMove1);
-    drawLeg(15, legOffset, legMove2);
-    drawLeg(-20, -legOffset, legMove2);
-    drawLeg(-20, legOffset, legMove1);
-
-    const tailWag = Math.sin(e.walkCycle * 2) * 0.2;
-    ctx.save();
-    ctx.translate(-35, 0);
-    ctx.rotate(tailWag);
-    ctx.fillStyle = e.color;
-    ctx.beginPath();
-    ctx.ellipse(-10, 0, 25, 8, 0, 0, Math.PI * 2);
-    ctx.fill();
-    if (isFriend) {
-        ctx.fillStyle = '#fff';
-        ctx.beginPath();
-        ctx.ellipse(-25, 0, 10, 5, 0, 0, Math.PI * 2);
-        ctx.fill();
+    // Glowing aura for Lvl 2
+    if (isLevel2) {
+        ctx.shadowColor = '#fbbf24';
+        ctx.shadowBlur = 15;
     }
-    ctx.restore();
 
-    ctx.fillStyle = e.color;
+    // Body (2 ellipses for realistic shape)
+    ctx.fillStyle = furColor;
     ctx.beginPath();
-    ctx.ellipse(0, 0, 35, 16, 0, 0, Math.PI * 2);
+    ctx.ellipse(-10, 0, 20, 12, 0, 0, Math.PI*2); // Rear
     ctx.fill();
-    
-    ctx.fillStyle = 'rgba(0,0,0,0.1)';
     ctx.beginPath();
-    ctx.ellipse(-5, 0, 25, 10, 0, 0, Math.PI * 2);
+    ctx.ellipse(5, 0, 18, 11, 0, 0, Math.PI*2); // Chest
     ctx.fill();
 
-    ctx.translate(25, 0); 
-    ctx.fillStyle = e.color;
+    // Head
+    ctx.fillStyle = furColor;
     ctx.beginPath();
-    ctx.ellipse(0, 0, 18, 14, 0, 0, Math.PI * 2);
+    ctx.moveTo(15, -8); // Ears
+    ctx.lineTo(25, -5);
+    ctx.lineTo(18, 0);
+    ctx.lineTo(25, 5);
+    ctx.lineTo(15, 8);
+    // Snout
+    ctx.quadraticCurveTo(35, 0, 15, -8);
     ctx.fill();
 
-    ctx.fillStyle = isEnemy ? '#171717' : (isFriend ? '#fff' : '#94a3b8');
+    // Ears detail
+    ctx.fillStyle = darkFur;
     ctx.beginPath();
-    ctx.ellipse(12, 0, 10, 6, 0, 0, Math.PI * 2);
-    ctx.fill();
-    
+    ctx.moveTo(18, -6); ctx.lineTo(22, -5); ctx.lineTo(19, -3); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(18, 6); ctx.lineTo(22, 5); ctx.lineTo(19, 3); ctx.fill();
+
+    // Nose
     ctx.fillStyle = '#000';
     ctx.beginPath();
-    ctx.arc(20, 0, 3, 0, Math.PI * 2);
+    ctx.arc(28, 0, 2, 0, Math.PI*2);
     ctx.fill();
 
-    ctx.fillStyle = e.color;
+    // Tail (Animated)
+    const tailWag = Math.sin(e.walkCycle * 2) * 0.4;
+    ctx.save();
+    ctx.translate(-25, 0);
+    ctx.rotate(tailWag);
+    ctx.fillStyle = furColor;
     ctx.beginPath();
-    ctx.moveTo(-5, -8); ctx.lineTo(5, -20); ctx.lineTo(8, -5); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(-5, 8); ctx.lineTo(5, 20); ctx.lineTo(8, 5); ctx.fill();
-
-    ctx.fillStyle = isEnemy ? '#ef4444' : '#000';
-    ctx.beginPath();
-    ctx.arc(5, -5, 2, 0, Math.PI * 2);
-    ctx.arc(5, 5, 2, 0, Math.PI * 2);
+    ctx.moveTo(0, -3);
+    ctx.quadraticCurveTo(-20, 0, 0, 3);
     ctx.fill();
-    
-    if (isEnemy) {
-        ctx.shadowColor = '#ef4444'; ctx.shadowBlur = 10; ctx.fill(); ctx.shadowBlur = 0;
-    }
-
     ctx.restore();
 
-    if (e.hp < e.maxHp) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        ctx.fillRect(e.pos.x - 25, e.pos.y - 50, 50, 6);
-        ctx.fillStyle = isEnemy ? '#ef4444' : '#22c55e';
-        ctx.fillRect(e.pos.x - 25, e.pos.y - 50, 50 * (e.hp / e.maxHp), 6);
+    // Legs (Animated)
+    const legMove = Math.sin(e.walkCycle * 1.5) * 5;
+    ctx.fillStyle = darkFur;
+    // Front Left
+    ctx.beginPath(); ctx.ellipse(10 + legMove, -12, 6, 3, 0, 0, Math.PI*2); ctx.fill();
+    // Front Right
+    ctx.beginPath(); ctx.ellipse(10 - legMove, 12, 6, 3, 0, 0, Math.PI*2); ctx.fill();
+    // Back Left
+    ctx.beginPath(); ctx.ellipse(-10 - legMove, -12, 6, 3, 0, 0, Math.PI*2); ctx.fill();
+    // Back Right
+    ctx.beginPath(); ctx.ellipse(-10 + legMove, 12, 6, 3, 0, 0, Math.PI*2); ctx.fill();
+
+    // Level 2 Crown/Mark
+    if (isLevel2) {
+        ctx.fillStyle = '#fbbf24';
+        ctx.beginPath();
+        ctx.moveTo(10, 0);
+        ctx.lineTo(5, -5);
+        ctx.lineTo(8, 0);
+        ctx.lineTo(5, 5);
+        ctx.fill();
     }
+
+    ctx.shadowBlur = 0;
+
+    // HP Bar
+    if (e.hp < e.maxHp) {
+        ctx.rotate(-e.rotation);
+        ctx.fillStyle = 'red';
+        ctx.fillRect(-20, -40, 40, 4);
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(-20, -40, 40 * (e.hp / e.maxHp), 4);
+    }
+    
+    ctx.restore();
   };
 
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
@@ -599,29 +730,39 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
             className="block cursor-crosshair"
         />
         
-        <div className="absolute top-4 left-4 flex flex-col gap-2 pointer-events-none">
-            <div className="flex items-center gap-2">
-                <div className="bg-neutral-900 border border-neutral-700 p-1 w-64 h-8 rounded relative overflow-hidden">
+        {/* TOP HUD */}
+        <div className="absolute top-0 left-0 right-0 p-4 flex flex-col items-center pointer-events-none z-50">
+            {/* XP Bar */}
+            <div className="w-full max-w-md bg-neutral-900/80 border border-neutral-700 h-6 rounded-full relative overflow-hidden mb-2">
+                <div 
+                    className="h-full bg-yellow-500 transition-all duration-300" 
+                    style={{ width: `${(hudState.xp / hudState.maxXp) * 100}%` }} 
+                />
+                <span className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-white drop-shadow-md tracking-widest">
+                    LVL {hudState.level} {hudState.level >= 2 ? '(MAX)' : `XP ${hudState.xp}/${hudState.maxXp}`}
+                </span>
+            </div>
+
+            <div className="flex justify-between w-full max-w-md">
+                 <div className="bg-neutral-900 border border-neutral-700 p-1 w-32 h-8 rounded relative overflow-hidden">
                     <div 
-                        className="h-full bg-gradient-to-r from-green-600 to-green-400 transition-all duration-300" 
-                        style={{ width: `${hudState.hp}%` }} 
+                        className="h-full bg-red-600 transition-all duration-300" 
+                        style={{ width: `${(hudState.hp / 100) * 100}%` }} 
                     />
                     <span className="absolute inset-0 flex items-center justify-center text-xs font-bold text-white drop-shadow-md">
-                        HP {Math.max(0, Math.floor(hudState.hp))}
+                        HP {Math.floor(hudState.hp)}
                     </span>
                 </div>
+                {isMultiplayer && (
+                   <div className="flex items-center gap-2 bg-black/30 px-2 rounded w-fit">
+                      <Radio className="w-4 h-4 text-green-500 animate-pulse" />
+                      <span className="text-xs text-green-500 font-mono">LIVE</span>
+                   </div>
+                )}
             </div>
-            <div className="text-white font-mono text-xl font-bold drop-shadow-md bg-black/30 px-2 rounded inline-block">
-                SCORE: {hudState.score}
-            </div>
-            {isMultiplayer && (
-               <div className="flex items-center gap-2 bg-black/30 px-2 rounded w-fit">
-                  <Radio className="w-4 h-4 text-green-500 animate-pulse" />
-                  <span className="text-xs text-green-500 font-mono">LIVE</span>
-               </div>
-            )}
         </div>
 
+        {/* CONTROLS */}
         <div className="absolute bottom-10 left-10 w-32 h-32 rounded-full border-2 border-white/20 bg-black/20 backdrop-blur-sm touch-none flex items-center justify-center z-50"
              ref={joyBaseRef}
              onTouchStart={handleJoyTouchStart}
@@ -632,7 +773,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
                 className="w-12 h-12 bg-white/50 rounded-full shadow-lg"
                 style={{ transform: `translate(${joystickPos.x}px, ${joystickPos.y}px)` }}
             />
-            <span className="absolute -top-8 text-white/50 text-xs font-bold tracking-widest pointer-events-none">MOVE</span>
         </div>
 
         <div className="absolute bottom-10 right-10 flex gap-4 z-50">
@@ -643,7 +783,6 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
             >
                 <Sword className="text-white w-10 h-10" />
             </button>
-             <span className="absolute -top-8 right-8 text-white/50 text-xs font-bold tracking-widest pointer-events-none">ATTACK</span>
         </div>
 
         <button 
@@ -658,8 +797,7 @@ export const GameEngine: React.FC<GameEngineProps> = ({ isMultiplayer, isHost, c
                 <div className="bg-neutral-900 border border-red-900 p-8 rounded-xl text-center max-w-sm w-full shadow-2xl shadow-red-900/20 transform scale-110">
                     <Skull className="w-16 h-16 text-red-600 mx-auto mb-4 animate-bounce" />
                     <h2 className="text-4xl font-black text-white mb-2 tracking-tighter">YOU DIED</h2>
-                    <p className="text-neutral-400 mb-6">The forest has claimed you.</p>
-                    <p className="text-2xl font-mono text-green-500 mb-8">SCORE: {hudState.score}</p>
+                    <p className="text-neutral-400 mb-6">The snake venom was too strong.</p>
                     <button 
                         onClick={onExit}
                         className="w-full bg-white text-black font-black py-4 rounded hover:bg-neutral-200 transition uppercase tracking-widest"
