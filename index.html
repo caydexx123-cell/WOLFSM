@@ -6,11 +6,13 @@
     <title>Forest Hotline</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      body {
-        background-color: #1a1a1a;
+      html, body, #root {
+        height: 100%;
+        width: 100%;
         margin: 0;
+        padding: 0;
+        background-color: #1a1a1a;
         overflow: hidden;
-        touch-action: none; /* Prevent browser zooming/scrolling on mobile */
       }
       /* Custom scanline effect for that retro vibe */
       .scanlines {
@@ -23,6 +25,21 @@
         );
         background-size: 100% 4px;
         pointer-events: none;
+        position: absolute;
+        inset: 0;
+        z-index: 50;
+      }
+      #error-display {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        padding: 20px;
+        background: rgba(220, 38, 38, 0.9);
+        color: white;
+        font-family: monospace;
+        z-index: 9999;
       }
     </style>
   <script type="importmap">
@@ -37,6 +54,30 @@
 </script>
 </head>
   <body>
-    <div id="root"></div>
+    <div id="error-display"></div>
+    <div id="root">
+      <div style="display:flex;justify-content:center;align-items:center;height:100%;color:#4ade80;font-family:monospace;font-size:24px;flex-direction:column;gap:16px;">
+        <div>INITIALIZING NEURAL LINK...</div>
+        <div style="width: 200px; height: 4px; background: #333; border-radius: 2px;">
+          <div style="width: 50%; height: 100%; background: #4ade80; animation: loading 1s infinite linear;"></div>
+        </div>
+      </div>
+      <style>
+        @keyframes loading { 0% { width: 0%; margin-left: 0; } 50% { width: 100%; margin-left: 0; } 100% { width: 0%; margin-left: 100%; } }
+      </style>
+    </div>
+
+    <!-- Error Handler -->
+    <script>
+      window.onerror = function(msg, url, lineNo, columnNo, error) {
+        var container = document.getElementById('error-display');
+        container.style.display = 'block';
+        container.innerHTML = '<strong>SYSTEM ERROR:</strong> ' + msg + '<br><small>' + url + ':' + lineNo + '</small>';
+        return false;
+      };
+    </script>
+
+    <!-- Entry Point: Important for Vite/Build tools -->
+    <script type="module" src="./index.tsx"></script>
   </body>
 </html>
